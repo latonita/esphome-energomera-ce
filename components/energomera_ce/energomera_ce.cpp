@@ -148,9 +148,9 @@ void CEComponent::loop() {
         ESP_LOGI(TAG, "Ping response received");
         this->data_.meter_found = true;
 
-        size_t PAL = 6;
-        if (payload_len >= PAL + 2) {
-          this->data_.meter_info.network_address = payload[PAL] | (payload[PAL + 1] << 8);
+        size_t offset = 8;
+        if (payload_len >= offset + 2) {
+          this->data_.meter_info.network_address = payload[offset] | (payload[offset + 1] << 8);
         }
 
         this->data_.got |= MASK_GOT_PING;
@@ -207,14 +207,6 @@ void CEComponent::loop() {
 
     case State::GET_ENERGY_TARIFFS: {
       this->log_state_();
-
-      /*
-
-[02:29:01][V][Energomera-CE:458]: Sending CE command 0x0130 to address 1234, data_len 2
-[02:29:01][VV][Energomera-CE:540]: TX payload: 48.04.D2.FD.00.31.DE.0B.00.D2.01.30.00.03.01 (15)
-[02:29:01][VV][Energomera-CE:468]: TX packet (SLIPPED): C0.48.04.D2.FD.00.31.DE.0B.00.D2.01.30.00.03.01.C0 (17)
-                                                        C0 48 D2 04 FD 00 31 DE 0B 00 D2 01 30 00 02 33 C0
-      */
 
       // Check if we've read all tariffs
       if (this->current_tariff_ >= TARIFF_COUNT) {
@@ -344,8 +336,8 @@ void CEComponent::update() {
   if (this->state_ == State::IDLE) {
     ESP_LOGV(TAG, "Starting meter communication cycle");
     this->data_.got = 0;  // Reset data collection flags
-    this->current_tariff_ = 1;
-    this->state_ = State::GET_ENERGY_TARIFFS;
+    this->current_tariff_ = 0;
+    this->state_ = State::PING_METER;
 
   } else {
     ESP_LOGW(TAG, "Skipping update - component busy in state %s", this->state_to_string(this->state_));
