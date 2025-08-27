@@ -17,7 +17,7 @@
 namespace esphome {
 namespace energomera_ce {
 
-static const char *TAG = "Energomera-CE";
+static const char *TAG = "energomera_ce";
 
 static constexpr uint32_t NO_GOOD_READS_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes
 static constexpr uint32_t RESPONSE_TIMEOUT_MS = 2 * 1000;            // 2 seconds
@@ -38,6 +38,19 @@ constexpr uint8_t CE_REPLY_FRAME_MIN_LEN = 9;
 constexpr uint8_t CE_REPLY_SERV_BYTE = 5;
 constexpr uint8_t CE_REPLY_DATA = 8;
 
+// 1020 CE102 R8 OKPQZ
+// 1022 CE102 S6, R5 AK
+// 1023 CE102 S6, R5 OK
+// 1024 CE102 S7 J
+// 1025 CE102 S7
+// 1026 CE102 R8
+// 1027 CE102 R5.1
+// 3073 или 3079 - CE307.
+const std::unordered_map<uint16_t, std::string> CE_VERSIONS = {
+    {1020, "CE102 R8 OKPQZ"}, {1022, "CE102 S6, R5 AK"}, {1023, "CE102 S6, R5 OK"},
+    {1024, "CE102 S7 J"},     {1025, "CE102 S7"},        {1026, "CE102 R8"},
+    {1027, "CE102 R5.1"},     {3073, "CE307"},           {3079, "CE307"}};
+    
 #pragma pack(1)
 // bit 7 - direction req/resp
 // bit 6-4 - class access
@@ -183,45 +196,15 @@ void CEComponent::loop() {
 
     case State::PING_METER: {
       this->log_state_();
-      uint8_t ping_data = 0;
-
-      auto ping_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
-        this->data_.meter_found = true;
-        this->data_.meter_info.network_address = msg[0] | (msg[1] << 8);
-        this->data_.got |= MASK_GOT_PING;
-        ESP_LOGI(TAG, "Ping response from %d", this->data_.meter_info.network_address);
-        return true;
-      };
-
-      prepare_and_send_command(get_command_for_meter(CECmd::PING), &ping_data, 0,
-                               get_response_size_for_meter(CECmd::PING), State::GET_VERSION, ping_processor);
+      prepare_and_send_command(get_command_for_meter(CECmd::PING), nullptr, 0, get_response_size_for_meter(CECmd::PING),
+                               State::GET_VERSION, get_ping_processor());
     } break;
 
     case State::GET_VERSION: {
       this->log_state_();
-      uint8_t version_data = 0;
-
-      auto version_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg,
-                                      size_t msg_len) -> bool {
-        uint8_t kernel_version = msg[0];
-        uint8_t fw_type = msg[1];
-        uint8_t fw_version_major = msg[2];
-        ESP_LOGI(TAG, "Kernel version: %d", kernel_version);
-        ESP_LOGI(TAG, "Firmware type: %d", fw_type);
-        ESP_LOGI(TAG, "Firmware version major: %d", fw_version_major);
-        ESP_LOGI(TAG, "Firmware date: %02d/%02d/20%02d", bcd2dec(msg[3]), bcd2dec(msg[4]), bcd2dec(msg[5]));
-
-        if ( kernel_version == 10) {
-          // its 102_r51 or ce307
-          if (this->meter_model_ != CEMeterModel::MODEL_CE102_R51 && this->meter_model_ != CEMeterModel::MODEL_CE307_R33) {
-            ESP_LOGW(TAG, "Most likely meter is CE102_R51 or CE307_R33. Check your configuration.");
-          }
-        }
-        return true;
-      };
-
-      prepare_and_send_command(get_command_for_meter(CECmd::VERSION), &version_data, 0,
-                               get_response_size_for_meter(CECmd::VERSION), State::GET_SERIAL_NR_0, version_processor);
+      prepare_and_send_command(get_command_for_meter(CECmd::VERSION), nullptr, 0,
+                               get_response_size_for_meter(CECmd::VERSION), State::GET_SERIAL_NR_0,
+                               get_version_processor());
     } break;
 
     case State::GET_SERIAL_NR_0: {
@@ -244,50 +227,17 @@ void CEComponent::loop() {
 
       uint8_t serial_data = 1;
 
-      auto serial_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
-        memcpy(this->data_.meter_info.serial_str + 8, msg, msg_len);
-        this->data_.meter_info.serial_str[16] = '\0';  // Null-terminate the string
-
-        // remove terminating '0', until its not '0'
-        for (int i = 15; i >= 0; i--) {
-          if (this->data_.meter_info.serial_str[i] == '0' || this->data_.meter_info.serial_str[i] == '\0') {
-            this->data_.meter_info.serial_str[i] = '\0';
-          } else {
-            break;
-          }
-        }
-        reverse_string_inplace(this->data_.meter_info.serial_str);
-        ESP_LOGI(TAG, "Serial number: %s", this->data_.meter_info.serial_str);
-
-        this->data_.got |= MASK_GOT_SERIAL;
-        return true;
-      };
-
       prepare_and_send_command(get_command_for_meter(CECmd::SERIAL_NR), &serial_data, 1,
-                               get_response_size_for_meter(CECmd::SERIAL_NR), State::GET_DATETIME, serial_processor);
+                               get_response_size_for_meter(CECmd::SERIAL_NR), State::GET_DATETIME,
+                               get_serial_processor());
     } break;
 
     case State::GET_DATETIME: {
       this->log_state_();
-      auto datetime_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg,
-                                       size_t msg_len) -> bool {
-        ESP_LOGI(TAG, "DateTime response received");
-
-        CEDateTime &dtm = *(CEDateTime *) msg;
-        snprintf(this->data_.time_str, sizeof(this->data_.time_str), "%02d:%02d:%02d", bcd2dec(dtm.hour),
-                 bcd2dec(dtm.minute), bcd2dec(dtm.second));
-        snprintf(this->data_.date_str, sizeof(this->data_.date_str), "%02d/%02d/20%02d", bcd2dec(dtm.day),
-                 bcd2dec(dtm.month), bcd2dec(dtm.year));
-        snprintf(this->data_.datetime_str, sizeof(this->data_.datetime_str), "%s %s", this->data_.date_str,
-                 this->data_.time_str);
-
-        this->data_.got |= MASK_GOT_DATETIME;
-        return true;
-      };
 
       prepare_and_send_command(get_command_for_meter(CECmd::DATE_TIME), nullptr, 0,
                                get_response_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY_TARIFFS,
-                               datetime_processor);
+                               get_datetime_processor());
     } break;
 
     case State::GET_ENERGY_TARIFFS: {
@@ -321,38 +271,14 @@ void CEComponent::loop() {
           break;
       }
 
-      uint8_t current_tariff_for_lambda = this->current_tariff_;  // Capture for lambda
-
-      auto energy_processor = [this, current_tariff_for_lambda](const uint8_t *payload, size_t payload_len,
-                                                                uint8_t *msg, size_t msg_len) -> bool {
-        size_t offset = 0;
-        uint32_t value = 0;
-
-        if (msg_len == 7) {
-          offset = CE_REPLY_DATA + 3;
-        } else if (msg_len == 4) {
-          offset = CE_REPLY_DATA;
-        }
-
-        value =
-            payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
-        this->data_.consumption[current_tariff_for_lambda] = value * 10;  // Convert to kWh
-        ESP_LOGI(TAG, "Energy T%d = %d Wh", current_tariff_for_lambda + 1, value * 10);
-        if (current_tariff_for_lambda == 0) {
-          this->data_.got |= MASK_GOT_TARIFF;  // Set flag only once for all tariffs
-        }
-
-        return true;
-      };
-
-      // Increment tariff counter for next iteration
+      uint8_t tariff = this->current_tariff_;  // Capture for lambda
       this->current_tariff_++;
-
-      // Determine next state - stay in same state to read next tariff, or move to publish
       State next_state = (this->current_tariff_ < TARIFF_COUNT) ? State::GET_ENERGY_TARIFFS : State::PUBLISH_INFO;
 
       prepare_and_send_command(get_command_for_meter(CECmd::ENERGY_BY_TARIFF), energy_data, data_len,
-                               get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF), next_state, energy_processor);
+                               get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF), next_state,
+                               get_energy_processor(tariff));
+
     } break;
 
     case State::PUBLISH_INFO: {
@@ -632,8 +558,8 @@ size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd
   uint16_t cmd_val = static_cast<uint16_t>(cmd);
   uint8_t cmd_h = (cmd_val >> 8) & 0xFF;
   uint8_t cmd_l = cmd_val & 0xFF;
-  payload[payload_len++] = cmd_l;
   payload[payload_len++] = cmd_h;
+  payload[payload_len++] = cmd_l;
 
   // Add data if any
   if (data != nullptr && data_len > 0) {
@@ -717,6 +643,38 @@ uint8_t CEComponent::crc8_ce(const uint8_t *buffer, size_t len) {
   return crc;
 }
 
+// for future for CE102 S7J(V10), CE306 R33(V10), CE306 S31(V10)
+
+// constexpr uint16_t CRC16_CCITT_POLY = 0x1021;  // x^16 + x^12 + x^5 + 1
+// constexpr uint16_t CRC16_CCITT_INIT = 0xFFFF;  // start value
+
+// uint16_t crc16_ccitt(const void *data, std::size_t len, uint16_t crc = CRC16_CCITT_INIT) {
+//   const uint8_t *p = static_cast<const uint8_t *>(data);
+//   while (len--) {
+//     crc ^= static_cast<uint16_t>(*p++) << 8;
+//     for (int i = 0; i < 8; ++i) {
+//       crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ CRC16_CCITT_POLY) : static_cast<uint16_t>(crc << 1);
+//     }
+//   }
+//   return crc;  // no final XOR for CCITT-FALSE
+// }
+// //---------------------------------------------------------------------------------------
+// //  The standard 16-bit CRC polynomial specified in ISO/IEC 3309 is used.
+// //             16   12   5
+// //  Which is: x  + x  + x + 1
+// //----------------------------------------------------------------------------
+// uint16_t CE2727aComponent::crc_16_iec(const uint8_t *buffer, uint16_t len) {
+//   uint16_t crc = 0xffff;
+//   uint8_t d;
+//   do {
+//     d = *buffer++ ^ (crc & 0xFF);
+//     d ^= d << 4;
+//     crc = (d << 3) ^ (d << 8) ^ (crc >> 8) ^ (d >> 4);
+//   } while (--len);
+//   crc ^= 0xFFFF;
+//   return crc;
+// }
+
 void CEComponent::reverse_string_inplace(char *str) {
   if (str == nullptr) {
     return;
@@ -746,12 +704,6 @@ void CEComponent::reverse_string_inplace(char *str) {
     start++;
     end--;
   }
-
-  // Example usage:
-  // char test[] = "hello";
-  // reverse_string_inplace(test);  // Result: "olleh"
-  // char test2[] = "12345";
-  // reverse_string_inplace(test2); // Result: "54321"
 }
 
 const char *CEComponent::state_to_string(State state) {
@@ -790,6 +742,95 @@ void CEComponent::log_state_(State *next_state) {
     }
     this->last_reported_state_ = this->state_;
   }
+}
+
+ResponseProcessor CEComponent::get_ping_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    this->data_.meter_found = true;
+    this->data_.meter_info.network_address = msg[0] | (msg[1] << 8);
+    this->data_.got |= MASK_GOT_PING;
+    ESP_LOGI(TAG, "Ping response from %d", this->data_.meter_info.network_address);
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_serial_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    memcpy(this->data_.meter_info.serial_str + 8, msg, msg_len);
+    this->data_.meter_info.serial_str[16] = '\0';  // Null-terminate the string
+
+    // remove terminating '0', until its not '0'
+    for (int i = 15; i >= 0; i--) {
+      if (this->data_.meter_info.serial_str[i] == '0' || this->data_.meter_info.serial_str[i] == '\0') {
+        this->data_.meter_info.serial_str[i] = '\0';
+      } else {
+        break;
+      }
+    }
+    reverse_string_inplace(this->data_.meter_info.serial_str);
+    ESP_LOGI(TAG, "Serial number: %s", this->data_.meter_info.serial_str);
+
+    this->data_.got |= MASK_GOT_SERIAL;
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_version_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    uint8_t kernel_version = msg[0];
+    uint8_t fw_type = msg[1];
+    uint8_t fw_version_major = msg[2];
+    ESP_LOGI(TAG, "Kernel version: %d", kernel_version);
+    ESP_LOGI(TAG, "Firmware type: %d", fw_type);
+    ESP_LOGI(TAG, "Firmware version major: %d", fw_version_major);
+    ESP_LOGI(TAG, "Firmware date: %02d/%02d/20%02d", bcd2dec(msg[3]), bcd2dec(msg[4]), bcd2dec(msg[5]));
+
+    if (kernel_version == 10) {
+      // its 102_r51 or ce307
+      if (this->meter_model_ != CEMeterModel::MODEL_CE102_R51 && this->meter_model_ != CEMeterModel::MODEL_CE307_R33) {
+        ESP_LOGW(TAG, "Most likely meter is CE102_R51 or CE307_R33. Check your configuration.");
+      }
+    }
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_datetime_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    ESP_LOGI(TAG, "DateTime response received");
+
+    CEDateTime &dtm = *(CEDateTime *) msg;
+    snprintf(this->data_.time_str, sizeof(this->data_.time_str), "%02d:%02d:%02d", bcd2dec(dtm.hour),
+             bcd2dec(dtm.minute), bcd2dec(dtm.second));
+    snprintf(this->data_.date_str, sizeof(this->data_.date_str), "%02d/%02d/20%02d", bcd2dec(dtm.day),
+             bcd2dec(dtm.month), bcd2dec(dtm.year));
+    snprintf(this->data_.datetime_str, sizeof(this->data_.datetime_str), "%s %s", this->data_.date_str,
+             this->data_.time_str);
+
+    this->data_.got |= MASK_GOT_DATETIME;
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff_zero_based) {
+  return [this, tariff_zero_based](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    size_t offset = 0;
+    uint32_t value = 0;
+
+    if (msg_len == 7) {
+      offset = CE_REPLY_DATA + 3;
+    } else if (msg_len == 4) {
+      offset = CE_REPLY_DATA;
+    }
+
+    value = payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
+    this->data_.consumption[tariff_zero_based] = value * 10;  // Convert to kWh
+    ESP_LOGI(TAG, "Energy T%d = %d Wh", tariff_zero_based + 1, value * 10);
+
+    this->data_.got |= MASK_GOT_TARIFF;
+
+    return true;
+  };
 }
 
 }  // namespace energomera_ce

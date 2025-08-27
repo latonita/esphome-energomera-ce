@@ -39,8 +39,8 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(CEComponent),
             cv.Optional(CONF_MODEL, default="CE102_R51"): cv.enum(METER_MODELS, upper=True),
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
-            cv.Optional(CONF_ADDRESS, default=0): cv.int_range(min=0x0, max=0xFFFF),
-            cv.Optional(CONF_PASSWORD, default=0): cv.int_range(min=0x0, max=0xFFFFFFFF),
+            cv.Optional(CONF_ADDRESS, default=0xFFFF): cv.int_range(min=0x0, max=0xFFFF),
+            cv.Optional(CONF_PASSWORD, default=777777): cv.int_range(min=0x0, max=0xFFFFFFFF),
             cv.Optional(CONF_RECEIVE_TIMEOUT, default="500ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_UPDATE_INTERVAL, default="30s"): cv.update_interval,
         }

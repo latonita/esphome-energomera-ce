@@ -93,7 +93,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   CEMeterModel meter_model_{CEMeterModel::MODEL_CE102_R51};
   GPIOPin *flow_control_pin_{nullptr};
   uint32_t receive_timeout_{2000};
-  uint16_t requested_meter_address_{0};
+  uint16_t requested_meter_address_{0xFFFF};
   uint32_t password_{0};
 
   InternalDataState data_{};
@@ -160,6 +160,13 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   inline uint16_t get_command_for_meter(CECmd cmd);
   inline uint16_t get_request_size_for_meter(CECmd cmd);
   inline uint16_t get_response_size_for_meter(CECmd cmd);
+
+  // Response processor functions
+  ResponseProcessor get_ping_processor();
+  ResponseProcessor get_version_processor();
+  ResponseProcessor get_serial_processor();
+  ResponseProcessor get_datetime_processor();
+  ResponseProcessor get_energy_processor(uint8_t tariff_zero_based);
 };
 
 }  // namespace energomera_ce
