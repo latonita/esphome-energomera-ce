@@ -4,13 +4,17 @@
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include <functional>
 
 namespace esphome {
 namespace energomera_ce {
 
 constexpr size_t TARIFF_COUNT = 4;  // Number of tariffs
-constexpr size_t MAX_RX_PACKET_SIZE = 256;
+constexpr size_t MAX_RX_PACKET_SIZE = 128;
 constexpr size_t MAX_TX_PACKET_SIZE = 64;  // Maximum size of a CE command packet
+
+// Function type for processing received data
+using ResponseProcessor = std::function<bool(const uint8_t *payload, size_t payload_len)>;
 
 struct InternalDataState {
   struct MeterInfo {
@@ -37,7 +41,7 @@ struct InternalDataState {
 enum class CEMeterModel : uint8_t {
   MODEL_UNKNOWN = 0,
   MODEL_CE102,
-  //ce303
+  // ce303
   MODEL_CE307,
   MODEL_COUNT,
 };
@@ -99,22 +103,27 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   uint8_t rx_buffer_[MAX_RX_PACKET_SIZE];
   size_t rx_buffer_pos_{0};
 
+  // Tariff reading counter (0-3 for tariffs 1-4)
+  uint8_t current_tariff_{0};
+
   // CRC-8 table for CE protocol
   static const uint8_t crc8_table_[256];
 
   // Tracker for the current command and response
   struct {
-    CECmd current_cmd{};
-    uint16_t expected_size{0};
+    uint16_t current_cmd{};
+    uint16_t expected_data_size{0};
     uint32_t start_time{0};
     uint16_t bytes_read{0};
     bool waiting_for_end{false};
+    ResponseProcessor response_processor{};
     void reset() {
-      current_cmd = CECmd::PING;
-      expected_size = 0;
+      current_cmd = 0;
+      expected_data_size = 0;
       start_time = 0;
       bytes_read = 0;
       waiting_for_end = false;
+      response_processor = nullptr;
     }
   } request_tracker_{};
 
@@ -125,20 +134,16 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
     PING_METER,
     GET_SERIAL_NR,
     GET_DATETIME,
-    GET_ENERGY_T1,
-    GET_ENERGY_T2,
-    GET_ENERGY_T3,
-    GET_ENERGY_T4,
-//    GET_ENERGY_SUM,
-//    GET_POWER,
+    GET_ENERGY_TARIFFS,
     PUBLISH_INFO,
   } state_{State::NOT_INITIALIZED};
 
   State next_state_{State::IDLE};
   State last_reported_state_{State::NOT_INITIALIZED};
 
-  void send_ce_command(uint16_t addr, CECmd cmd, const uint8_t *data = nullptr, size_t data_len = 0);
-  void start_async_request(CECmd cmd, uint8_t data, State next_state);
+  void prepare_and_send_command(uint16_t cmd, const uint8_t *data, size_t data_len, size_t expected_data_size, State next_state,
+                                ResponseProcessor processor);
+  void send_ce_command(uint16_t addr, uint16_t cmd, const uint8_t *data = nullptr, size_t data_len = 0);
   bool process_response();
   bool process_received_data();
 
@@ -146,8 +151,12 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   void log_state_(State *next_state = nullptr);
 
   uint8_t crc8_ce(const uint8_t *buffer, size_t len);
-  size_t build_ce_packet(uint8_t *buffer, uint16_t addr, CECmd cmd, const uint8_t *data, size_t data_len);
+  size_t build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd, const uint8_t *data, size_t data_len);
   bool decode_ce_packet(uint8_t *buffer, size_t &buffer_len);
+
+  inline uint16_t get_command_for_meter(CECmd cmd);
+  inline uint16_t get_request_size_for_meter(CECmd cmd);
+  inline uint16_t get_response_size_for_meter(CECmd cmd);
 };
 
 }  // namespace energomera_ce

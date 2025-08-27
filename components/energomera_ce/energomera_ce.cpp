@@ -34,10 +34,10 @@ constexpr uint8_t CE_DIRECT_REQ = 0b10000000;
 constexpr uint8_t CE_CLASS_ACCESS = 0b01010000;
 
 // now for each model we need to have: for each request: its command code, bytes in, bytes out. array.
-uint16_t CECommands[(size_t)CEMeterModel::MODEL_COUNT][(size_t)CECmd::CMD_COUNT][3] = {
+uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
     // PING          SERIAL           DATE_TIME      ENERGY_BY_TARIFF  POWER
     {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},  // MODEL_UNKNOWN
-    {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 4}, {0x0132, 0, 3}},  // MODEL_CE102
+    {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0132, 0, 3}},  // MODEL_CE102
     {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0000, 0, 0}},  // MODEL_CE307_R33
 };
 
@@ -93,6 +93,18 @@ void CEComponent::setup() {
   this->set_timeout(SETUP_DELAY_MS, [this]() { this->state_ = State::IDLE; });
 }
 
+uint16_t CEComponent::get_command_for_meter(CECmd cmd) {
+  return CECommands[(size_t) this->meter_model_][(size_t) cmd][0];
+}
+
+uint16_t CEComponent::get_request_size_for_meter(CECmd cmd) {
+  return CECommands[(size_t) this->meter_model_][(size_t) cmd][1];
+}
+
+uint16_t CEComponent::get_response_size_for_meter(CECmd cmd) {
+  return CECommands[(size_t) this->meter_model_][(size_t) cmd][2];
+}
+
 void CEComponent::loop() {
   if (!this->is_ready())
     return;
@@ -122,7 +134,7 @@ void CEComponent::loop() {
           ESP_LOGW(TAG, "Response timeout for command 0x%04X",
                    static_cast<uint16_t>(this->request_tracker_.current_cmd));
           this->data_.read_errors++;
-          this->state_ = State::IDLE;
+          this->state_ = this->next_state_;  // State::IDLE;
           this->request_tracker_.reset();
         }
       }
@@ -130,37 +142,142 @@ void CEComponent::loop() {
 
     case State::PING_METER: {
       this->log_state_();
-      start_async_request(CECmd::PING, 0, State::GET_SERIAL_NR);
+      uint8_t ping_data = 0;
+
+      auto ping_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
+        ESP_LOGI(TAG, "Ping response received");
+        this->data_.meter_found = true;
+
+        size_t PAL = 6;
+        if (payload_len >= PAL + 2) {
+          this->data_.meter_info.network_address = payload[PAL] | (payload[PAL + 1] << 8);
+        }
+
+        this->data_.got |= MASK_GOT_PING;
+        return true;
+      };
+
+      prepare_and_send_command(get_command_for_meter(CECmd::PING), &ping_data, 0,
+                               get_request_size_for_meter(CECmd::PING), State::GET_SERIAL_NR, ping_processor);
     } break;
 
     case State::GET_SERIAL_NR: {
       this->log_state_();
-      start_async_request(CECmd::SERIAL_NR, 0, State::GET_DATETIME);
+      // Prepare data for SERIAL_NR command
+      uint8_t serial_data = 0;
+
+      auto serial_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
+        ESP_LOGI(TAG, "Serial number response received");
+
+        // TODO: Process serial number data when format is known
+        // size_t PAL = 6;
+        // if (payload_len >= PAL + 8) {
+        //   // Process serial number from payload[PAL] to payload[PAL+7]
+        // }
+
+        this->data_.got |= MASK_GOT_SERIAL;
+        return true;
+      };
+
+      prepare_and_send_command(get_command_for_meter(CECmd::SERIAL_NR), &serial_data, 1,
+                               get_request_size_for_meter(CECmd::SERIAL_NR), State::GET_DATETIME, serial_processor);
     } break;
 
     case State::GET_DATETIME: {
       this->log_state_();
-      start_async_request(CECmd::DATE_TIME, 0, State::GET_ENERGY_T1);
+      // Prepare data for DATE_TIME command
+
+      auto datetime_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
+        ESP_LOGI(TAG, "DateTime response received");
+
+        // TODO: Process datetime data when format is known
+        // size_t PAL = 6;
+        // if (payload_len >= PAL + 7) {
+        //   // Process datetime from payload[PAL] to payload[PAL+6]
+        // }
+
+        this->data_.got |= MASK_GOT_DATETIME;
+        return true;
+      };
+
+      prepare_and_send_command(get_command_for_meter(CECmd::DATE_TIME), nullptr, 0,
+                               get_request_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY_TARIFFS,
+                               datetime_processor);
     } break;
 
-    case State::GET_ENERGY_T1: {
+    case State::GET_ENERGY_TARIFFS: {
       this->log_state_();
-      start_async_request(CECmd::ENERGY_BY_TARIFF, 1, State::GET_ENERGY_T2);
-    } break;
 
-    case State::GET_ENERGY_T2: {
-      this->log_state_();
-      start_async_request(CECmd::ENERGY_BY_TARIFF, 2, State::GET_ENERGY_T3);
-    } break;
+      /*
 
-    case State::GET_ENERGY_T3: {
-      this->log_state_();
-      start_async_request(CECmd::ENERGY_BY_TARIFF, 3, State::GET_ENERGY_T4);
-    } break;
+[02:29:01][V][Energomera-CE:458]: Sending CE command 0x0130 to address 1234, data_len 2
+[02:29:01][VV][Energomera-CE:540]: TX payload: 48.04.D2.FD.00.31.DE.0B.00.D2.01.30.00.03.01 (15)
+[02:29:01][VV][Energomera-CE:468]: TX packet (SLIPPED): C0.48.04.D2.FD.00.31.DE.0B.00.D2.01.30.00.03.01.C0 (17)
+                                                        C0 48 D2 04 FD 00 31 DE 0B 00 D2 01 30 00 02 33 C0
+      */
 
-    case State::GET_ENERGY_T4: {
-      this->log_state_();
-      start_async_request(CECmd::ENERGY_BY_TARIFF, 4, State::PUBLISH_INFO);
+      // Check if we've read all tariffs
+      if (this->current_tariff_ >= TARIFF_COUNT) {
+        this->state_ = State::PUBLISH_INFO;
+        break;
+      }
+
+      // Prepare data for ENERGY_BY_TARIFF command for current tariff
+      size_t data_len = 2;
+      uint8_t energy_data[2];
+      switch (this->meter_model_) {
+        case CEMeterModel::MODEL_CE102:
+          energy_data[0] = 0;
+          energy_data[1] = this->current_tariff_ + 1;  // 1-based tariff number
+          break;
+        case CEMeterModel::MODEL_CE307:
+          energy_data[0] = this->current_tariff_;  // CE307 uses 0-based indexing
+          energy_data[1] = 0;
+          break;
+        default:
+          ESP_LOGW(TAG, "Unsupported meter model for tariff reading");
+          this->state_ = State::PUBLISH_INFO;
+          break;
+      }
+
+      uint8_t current_tariff_for_lambda = this->current_tariff_;  // Capture for lambda
+
+      auto energy_processor = [this, current_tariff_for_lambda](const uint8_t *payload, size_t payload_len) -> bool {
+        ESP_LOGI(TAG, "Energy T%d response received, p 0x%p, len %d, expected data block %d",
+                 current_tariff_for_lambda + 1, payload, payload_len, this->request_tracker_.expected_data_size);
+
+        size_t offset = 8;
+        size_t resp_len = this->request_tracker_.expected_data_size;
+        if (payload_len >= 9 + resp_len) {
+          uint32_t value = 0;
+
+          if (resp_len == 7) {
+            offset += 3;
+          }
+
+          value =
+              payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
+          ESP_LOGI(TAG, "Raw value: %u", value);
+          this->data_.consumption[current_tariff_for_lambda] = value * 10;  // Convert to kWh
+          if (current_tariff_for_lambda == 0) {
+            this->data_.got |= MASK_GOT_TARIFF;  // Set flag only once for all tariffs
+          }
+
+          return true;
+        } else {
+          ESP_LOGW(TAG, "Tariff T%d response too short: %d bytes", current_tariff_for_lambda + 1, payload_len);
+          return false;
+        }
+      };
+
+      // Increment tariff counter for next iteration
+      this->current_tariff_++;
+
+      // Determine next state - stay in same state to read next tariff, or move to publish
+      State next_state = (this->current_tariff_ < TARIFF_COUNT) ? State::GET_ENERGY_TARIFFS : State::PUBLISH_INFO;
+
+      prepare_and_send_command(get_command_for_meter(CECmd::ENERGY_BY_TARIFF), energy_data, data_len,
+                               get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF), next_state, energy_processor);
     } break;
 
     case State::PUBLISH_INFO: {
@@ -227,38 +344,39 @@ void CEComponent::update() {
   if (this->state_ == State::IDLE) {
     ESP_LOGV(TAG, "Starting meter communication cycle");
     this->data_.got = 0;  // Reset data collection flags
-    this->state_ = State::PING_METER;
+    this->current_tariff_ = 1;
+    this->state_ = State::GET_ENERGY_TARIFFS;
+
   } else {
     ESP_LOGW(TAG, "Skipping update - component busy in state %s", this->state_to_string(this->state_));
   }
 }
 
-void CEComponent::start_async_request(CECmd cmd, uint8_t data, State next_state) {
-  ESP_LOGV(TAG, "Starting async request for command 0x%04X", static_cast<uint16_t>(cmd));
+void CEComponent::prepare_and_send_command(uint16_t cmd, const uint8_t *data, size_t data_len,
+                                           size_t expected_data_size, State next_state, ResponseProcessor processor) {
+  ESP_LOGV(TAG, "Starting async request for command %d", static_cast<uint8_t>(cmd));
 
+  if (cmd == 0) {
+    ESP_LOGV(TAG, " - No command to send");
+    this->state_ = next_state;
+    return;
+  }
+
+  // Fill request tracker
   this->request_tracker_.current_cmd = cmd;
   this->request_tracker_.start_time = millis();
   this->request_tracker_.bytes_read = 0;
   this->request_tracker_.waiting_for_end = false;
+  this->request_tracker_.expected_data_size = expected_data_size;
+  this->request_tracker_.response_processor = processor;
   this->rx_buffer_pos_ = 0;
 
+  // Set next state and current state
   this->next_state_ = next_state;
   this->state_ = State::WAITING_FOR_RESPONSE;
 
-  // Send the command
-  uint8_t data_to_send[2] = {0, 0};
-  size_t data_len = CECommands[static_cast<uint8_t>(this->meter_model_)][static_cast<uint8_t>(cmd)][1];
-
-  if (data_len == 1) {
-    data_to_send[0] = data;
-  } else if (data_len == 2) {
-    if (cmd == CECmd::ENERGY_BY_TARIFF) {
-      data_to_send[0] = this->meter_model_ == CEMeterModel::MODEL_CE307 ? data - 1 : data;
-      data_to_send[1] = 0;
-    }
-  }
-
-  send_ce_command(this->requested_meter_address_, cmd, &data, data_len);
+  // Send the command with prepared data
+  send_ce_command(this->requested_meter_address_, cmd, data, data_len);
 }
 
 bool CEComponent::process_response() {
@@ -322,83 +440,29 @@ bool CEComponent::process_received_data() {
   ESP_LOGVV(TAG, "Decoded payload: %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
 
   // expected length
-  size_t PAL = 6;
   size_t expected_len =
-      8 +
-      CECommands[static_cast<uint8_t>(this->meter_model_)][static_cast<uint8_t>(this->request_tracker_.current_cmd)][2];
+      9 + this->request_tracker_.expected_data_size;  // OPT(1)+ADDR(2)+SRC(2)+PASSWD(4)+SERV(1)+CMD(2)+DATA+CRC(1)
   if (expected_len != this->rx_buffer_pos_) {
     ESP_LOGE(TAG, "Wrong expected length: %d, Received length: %d", expected_len, this->rx_buffer_pos_);
-  } else {
-    ESP_LOGV(TAG, "Expected length: %d, Received length: %d", expected_len, this->rx_buffer_pos_);
+    return false;
   }
 
-  bool success = false;
+  ESP_LOGV(TAG, "Expected length: %d, Received length: %d", expected_len, this->rx_buffer_pos_);
+
   this->data_.proper_reads++;
 
-  switch (this->request_tracker_.current_cmd) {
-    case CECmd::PING: {
-      ESP_LOGI(TAG, "Ping response received");
-      this->data_.meter_found = true;
-      if (this->rx_buffer_pos_ >= PAL + 2) {
-        this->data_.meter_info.network_address = this->rx_buffer_[PAL] | (this->rx_buffer_[PAL + 1] << 8);
-      }
-
-      this->data_.got |= MASK_GOT_PING;
-      success = true;
-      break;
-    }
-
-      // case CECmd::SERIAL_NR: {
-      //   if (this->rx_buffer_pos_ >= 4) {
-      //     // Assuming serial number is in the first 4 bytes of payload
-      //     uint32_t serial = (this->rx_buffer_[3] << 24) | (this->rx_buffer_[2] << 16) | (this->rx_buffer_[1] << 8) |
-      //                       this->rx_buffer_[0];
-      //     this->data_.meter_info.serial_number = serial;
-      //     this->data_.meter_info.network_address = this->requested_meter_address_;
-
-      //     snprintf(this->data_.meter_info.serial_str, sizeof(this->data_.meter_info.serial_str), "%u", serial);
-      //     snprintf(this->data_.meter_info.network_address_str, sizeof(this->data_.meter_info.network_address_str),
-      //     "%u",
-      //              this->requested_meter_address_);
-
-      //     ESP_LOGI(TAG, "Serial number: %u, Network address: %u", serial, this->requested_meter_address_);
-      //     this->data_.got |= MASK_GOT_SERIAL;
-      //     success = true;
-      //   } else {
-      //     ESP_LOGW(TAG, "Serial number response too short: %d bytes", this->rx_buffer_pos_);
-      //   }
-      //   break;
-      // }
-
-    case CECmd::ENERGY_BY_TARIFF: {
-      size_t resp_len = CECommands[static_cast<uint8_t>(this->meter_model_)][static_cast<uint8_t>(this->request_tracker_.current_cmd)][2];
-      if (this->rx_buffer_pos_ >= PAL + resp_len) { 
-        
-        uint32_t value = 0;
-        if (resp_len == 4) {
-          value = *reinterpret_cast<uint32_t *>(this->rx_buffer_ + PAL);
-        } else if (resp_len == 7) {
-          value = *reinterpret_cast<uint32_t *>(this->rx_buffer_ + PAL + 3);
-        }
-
-        this->data_.got |= MASK_GOT_TARIFF;
-        success = true;
-      } else {
-        ESP_LOGW(TAG, "Tariff response too short: %d bytes", this->rx_buffer_pos_);
-      }
-      break;
-    }
-
-    default:
-      ESP_LOGE(TAG, "Unknown command response: 0x%04X", static_cast<uint16_t>(this->request_tracker_.current_cmd));
-      break;
+  // Use the lambda function to process the response
+  if (this->request_tracker_.response_processor) {
+    return this->request_tracker_.response_processor(this->rx_buffer_, this->rx_buffer_pos_);
+  } else {
+    ESP_LOGE(TAG, "No response processor available for command 0x%04X",
+             static_cast<uint16_t>(this->request_tracker_.current_cmd));
+    return false;
   }
-
-  return success;
 }
 
-void CEComponent::send_ce_command(uint16_t addr, CECmd cmd, const uint8_t *data, size_t data_len) {
-  ESP_LOGV(TAG, "Sending CE command 0x%04X to address %u, data_len %d", static_cast<uint16_t>(cmd), addr, data_len);
+void CEComponent::send_ce_command(uint16_t addr, uint16_t cmd, const uint8_t *data, size_t data_len) {
+  ESP_LOGV(TAG, "Sending CE command 0x%04X to address %u, data_len %d", cmd, addr, data_len);
 
   // Build the complete packet in the static buffer
   size_t packet_len = build_ce_packet(this->tx_buffer_, addr, cmd, data, data_len);
@@ -422,7 +486,8 @@ void CEComponent::send_ce_command(uint16_t addr, CECmd cmd, const uint8_t *data,
   }
 }
 
-size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, CECmd cmd, const uint8_t *data, size_t data_len) {
+size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd, const uint8_t *data,
+                                    size_t data_len) {
   if (buffer == nullptr) {
     return 0;
   }
@@ -443,7 +508,7 @@ size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, CECmd cmd, c
   payload[payload_len++] = addr_h;
 
   // Add source address (0)
-  payload[payload_len++] = 0;
+  payload[payload_len++] = 253;
   payload[payload_len++] = 0;
 
   // Add password (4 bytes)
@@ -464,8 +529,10 @@ size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, CECmd cmd, c
   payload[payload_len++] = cmd_l;
 
   // Add data if any
-  for (size_t i = 0; i < data_len; i++) {
-    payload[payload_len++] = data[i];
+  if (data != nullptr && data_len > 0) {
+    for (size_t i = 0; i < data_len; i++) {
+      payload[payload_len++] = data[i];
+    }
   }
 
   // Calculate and add CRC for the entire payload
@@ -557,14 +624,8 @@ const char *CEComponent::state_to_string(State state) {
       return "GET_SERIAL_NR";
     case State::GET_DATETIME:
       return "GET_DATETIME";
-    case State::GET_ENERGY_T1:
-      return "GET_ENERGY_T1";
-    case State::GET_ENERGY_T2:
-      return "GET_ENERGY_T2";
-    case State::GET_ENERGY_T3:
-      return "GET_ENERGY_T3";
-    case State::GET_ENERGY_T4:
-      return "GET_ENERGY_T4";
+    case State::GET_ENERGY_TARIFFS:
+      return "GET_ENERGY_TARIFFS";
     case State::PUBLISH_INFO:
       return "PUBLISH_INFO";
     default:
