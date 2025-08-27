@@ -14,14 +14,13 @@ constexpr size_t MAX_RX_PACKET_SIZE = 128;
 constexpr size_t MAX_TX_PACKET_SIZE = 64;  // Maximum size of a CE command packet
 
 // Function type for processing received data
-using ResponseProcessor = std::function<bool(const uint8_t *payload, size_t payload_len)>;
+using ResponseProcessor = std::function<bool(const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len)>;
 
 struct InternalDataState {
   struct MeterInfo {
     uint32_t serial_number{0};
     uint16_t network_address{0};
     char serial_str[32]{0};
-    char network_address_str[16]{0};
     bool ping_successful{false};
   } meter_info;
 
@@ -41,13 +40,14 @@ struct InternalDataState {
 enum class CEMeterModel : uint8_t {
   MODEL_UNKNOWN = 0,
   MODEL_CE102,
-  // ce303
-  MODEL_CE307,
+  MODEL_CE102_R51,
+  MODEL_CE307_R33,
   MODEL_COUNT,
 };
 
 enum class CECmd : uint8_t {
   PING = 0,
+  VERSION,
   SERIAL_NR,
   DATE_TIME,
   ENERGY_BY_TARIFF,
@@ -90,7 +90,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   void update() override;
 
  protected:
-  CEMeterModel meter_model_{CEMeterModel::MODEL_CE307};
+  CEMeterModel meter_model_{CEMeterModel::MODEL_CE102_R51};
   GPIOPin *flow_control_pin_{nullptr};
   uint32_t receive_timeout_{2000};
   uint16_t requested_meter_address_{0};
@@ -112,14 +112,14 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   // Tracker for the current command and response
   struct {
     uint16_t current_cmd{};
-    uint16_t expected_data_size{0};
+    uint16_t expected_message_len{0};
     uint32_t start_time{0};
     uint16_t bytes_read{0};
     bool waiting_for_end{false};
     ResponseProcessor response_processor{};
     void reset() {
       current_cmd = 0;
-      expected_data_size = 0;
+      expected_message_len = 0;
       start_time = 0;
       bytes_read = 0;
       waiting_for_end = false;
@@ -132,7 +132,9 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
     IDLE,
     WAITING_FOR_RESPONSE,
     PING_METER,
-    GET_SERIAL_NR,
+    GET_VERSION,
+    GET_SERIAL_NR_0,
+    GET_SERIAL_NR_1,
     GET_DATETIME,
     GET_ENERGY_TARIFFS,
     PUBLISH_INFO,
@@ -141,8 +143,8 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   State next_state_{State::IDLE};
   State last_reported_state_{State::NOT_INITIALIZED};
 
-  void prepare_and_send_command(uint16_t cmd, const uint8_t *data, size_t data_len, size_t expected_data_size, State next_state,
-                                ResponseProcessor processor);
+  void prepare_and_send_command(uint16_t cmd, const uint8_t *data, size_t data_len, size_t expected_message_len,
+                                State next_state, ResponseProcessor processor);
   void send_ce_command(uint16_t addr, uint16_t cmd, const uint8_t *data = nullptr, size_t data_len = 0);
   bool process_response();
   bool process_received_data();
@@ -153,6 +155,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   uint8_t crc8_ce(const uint8_t *buffer, size_t len);
   size_t build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd, const uint8_t *data, size_t data_len);
   bool decode_ce_packet(uint8_t *buffer, size_t &buffer_len);
+  void reverse_string_inplace(char *str);
 
   inline uint16_t get_command_for_meter(CECmd cmd);
   inline uint16_t get_request_size_for_meter(CECmd cmd);

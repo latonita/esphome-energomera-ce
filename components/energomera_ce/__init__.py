@@ -29,14 +29,15 @@ CEMeterModel = energomera_ce_ns.enum("CEMeterModel", True)
 METER_MODELS = {
     "UNKNOWN": CEMeterModel.MODEL_UNKNOWN,
     "CE102": CEMeterModel.MODEL_CE102,
-    "CE307": CEMeterModel.MODEL_CE307,
+    "CE102_R51": CEMeterModel.MODEL_CE102_R51,
+    "CE307_R33": CEMeterModel.MODEL_CE307_R33,
 }
 
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(CEComponent),
-            cv.Optional(CONF_MODEL, default="CE102"): cv.enum(METER_MODELS, upper=True),
+            cv.Optional(CONF_MODEL, default="CE102_R51"): cv.enum(METER_MODELS, upper=True),
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_ADDRESS, default=0): cv.int_range(min=0x0, max=0xFFFF),
             cv.Optional(CONF_PASSWORD, default=0): cv.int_range(min=0x0, max=0xFFFFFFFF),

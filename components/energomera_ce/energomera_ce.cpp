@@ -33,12 +33,46 @@ constexpr uint8_t CE_OPT = 0x48;
 constexpr uint8_t CE_DIRECT_REQ = 0b10000000;
 constexpr uint8_t CE_CLASS_ACCESS = 0b01010000;
 
+constexpr uint8_t CE_REPLY_FRAME_MIN_LEN = 9;
+
+constexpr uint8_t CE_REPLY_SERV_BYTE = 5;
+constexpr uint8_t CE_REPLY_DATA = 8;
+
+#pragma pack(1)
+// bit 7 - direction req/resp
+// bit 6-4 - class access
+// bit 3-0 - message len
+union Serv {
+  uint8_t raw;
+  struct {
+    uint8_t message_len : 4;
+    uint8_t class_access : 3;
+    uint8_t direction : 1;
+  };
+};
+
+struct CEDateTime {
+  uint8_t second;       // BCD
+  uint8_t minute;       // BCD
+  uint8_t hour;         // BCD
+  uint8_t day_of_week;  // BCD
+  uint8_t day;          // BCD
+  uint8_t month;        // BCD
+  uint8_t year;         // BCD + 2000
+};
+#pragma pack(0)
+
 // now for each model we need to have: for each request: its command code, bytes in, bytes out. array.
 uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
-    // PING          SERIAL           DATE_TIME      ENERGY_BY_TARIFF  POWER
-    {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},  // MODEL_UNKNOWN
-    {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0132, 0, 3}},  // MODEL_CE102
-    {{0x0001, 0, 2}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0000, 0, 0}},  // MODEL_CE307_R33
+    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  POWER
+    // MODEL_UNKNOWN
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
+    // MODEL_CE102
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0132, 0, 3}},
+    // MODEL_CE102_R51
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0182, 0, 4}},
+    // MODEL_CE307_R33
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0000, 0, 0}},
 };
 
 // CRC-8 table for CE protocol (from the library)
@@ -57,6 +91,13 @@ const uint8_t CEComponent::crc8_table_[256] = {
     0xfc, 0x96, 0x23, 0x42, 0xf7, 0x9d, 0x28, 0x5f, 0xea, 0x80, 0x35, 0x54, 0xe1, 0x8b, 0x3e, 0x3d, 0x88, 0xe2, 0x57,
     0x36, 0x83, 0xe9, 0x5c, 0x2b, 0x9e, 0xf4, 0x41, 0x20, 0x95, 0xff, 0x4a, 0x11, 0xa4, 0xce, 0x7b, 0x1a, 0xaf, 0xc5,
     0x70, 0x7,  0xb2, 0xd8, 0x6d, 0xc,  0xb9, 0xd3, 0x66};
+
+static inline int bcd2dec(uint8_t hex) {
+  assert(((hex & 0xF0) >> 4) < 10);  // More significant nybble is valid
+  assert((hex & 0x0F) < 10);         // Less significant nybble is valid
+  int dec = ((hex & 0xF0) >> 4) * 10 + (hex & 0x0F);
+  return dec;
+}
 
 float CEComponent::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
@@ -144,64 +185,108 @@ void CEComponent::loop() {
       this->log_state_();
       uint8_t ping_data = 0;
 
-      auto ping_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
-        ESP_LOGI(TAG, "Ping response received");
+      auto ping_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
         this->data_.meter_found = true;
-
-        size_t offset = 8;
-        if (payload_len >= offset + 2) {
-          this->data_.meter_info.network_address = payload[offset] | (payload[offset + 1] << 8);
-        }
-
+        this->data_.meter_info.network_address = msg[0] | (msg[1] << 8);
         this->data_.got |= MASK_GOT_PING;
+        ESP_LOGI(TAG, "Ping response from %d", this->data_.meter_info.network_address);
         return true;
       };
 
       prepare_and_send_command(get_command_for_meter(CECmd::PING), &ping_data, 0,
-                               get_request_size_for_meter(CECmd::PING), State::GET_SERIAL_NR, ping_processor);
+                               get_response_size_for_meter(CECmd::PING), State::GET_VERSION, ping_processor);
     } break;
 
-    case State::GET_SERIAL_NR: {
+    case State::GET_VERSION: {
       this->log_state_();
-      // Prepare data for SERIAL_NR command
+      uint8_t version_data = 0;
+
+      auto version_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg,
+                                      size_t msg_len) -> bool {
+        uint8_t kernel_version = msg[0];
+        uint8_t fw_type = msg[1];
+        uint8_t fw_version_major = msg[2];
+        ESP_LOGI(TAG, "Kernel version: %d", kernel_version);
+        ESP_LOGI(TAG, "Firmware type: %d", fw_type);
+        ESP_LOGI(TAG, "Firmware version major: %d", fw_version_major);
+        ESP_LOGI(TAG, "Firmware date: %02d/%02d/20%02d", bcd2dec(msg[3]), bcd2dec(msg[4]), bcd2dec(msg[5]));
+
+        if ( kernel_version == 10) {
+          // its 102_r51 or ce307
+          if (this->meter_model_ != CEMeterModel::MODEL_CE102_R51 && this->meter_model_ != CEMeterModel::MODEL_CE307_R33) {
+            ESP_LOGW(TAG, "Most likely meter is CE102_R51 or CE307_R33. Check your configuration.");
+          }
+        }
+        return true;
+      };
+
+      prepare_and_send_command(get_command_for_meter(CECmd::VERSION), &version_data, 0,
+                               get_response_size_for_meter(CECmd::VERSION), State::GET_SERIAL_NR_0, version_processor);
+    } break;
+
+    case State::GET_SERIAL_NR_0: {
+      this->log_state_();
+
       uint8_t serial_data = 0;
+      memset(this->data_.meter_info.serial_str, 0, sizeof(this->data_.meter_info.serial_str));
 
-      auto serial_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
-        ESP_LOGI(TAG, "Serial number response received");
+      auto serial_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+        memcpy(this->data_.meter_info.serial_str, msg, msg_len);
+        return true;
+      };
 
-        // TODO: Process serial number data when format is known
-        // size_t PAL = 6;
-        // if (payload_len >= PAL + 8) {
-        //   // Process serial number from payload[PAL] to payload[PAL+7]
-        // }
+      prepare_and_send_command(get_command_for_meter(CECmd::SERIAL_NR), &serial_data, 1,
+                               get_response_size_for_meter(CECmd::SERIAL_NR), State::GET_SERIAL_NR_1, serial_processor);
+    } break;
+
+    case State::GET_SERIAL_NR_1: {
+      this->log_state_();
+
+      uint8_t serial_data = 1;
+
+      auto serial_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+        memcpy(this->data_.meter_info.serial_str + 8, msg, msg_len);
+        this->data_.meter_info.serial_str[16] = '\0';  // Null-terminate the string
+
+        // remove terminating '0', until its not '0'
+        for (int i = 15; i >= 0; i--) {
+          if (this->data_.meter_info.serial_str[i] == '0' || this->data_.meter_info.serial_str[i] == '\0') {
+            this->data_.meter_info.serial_str[i] = '\0';
+          } else {
+            break;
+          }
+        }
+        reverse_string_inplace(this->data_.meter_info.serial_str);
+        ESP_LOGI(TAG, "Serial number: %s", this->data_.meter_info.serial_str);
 
         this->data_.got |= MASK_GOT_SERIAL;
         return true;
       };
 
       prepare_and_send_command(get_command_for_meter(CECmd::SERIAL_NR), &serial_data, 1,
-                               get_request_size_for_meter(CECmd::SERIAL_NR), State::GET_DATETIME, serial_processor);
+                               get_response_size_for_meter(CECmd::SERIAL_NR), State::GET_DATETIME, serial_processor);
     } break;
 
     case State::GET_DATETIME: {
       this->log_state_();
-      // Prepare data for DATE_TIME command
-
-      auto datetime_processor = [this](const uint8_t *payload, size_t payload_len) -> bool {
+      auto datetime_processor = [this](const uint8_t *payload, size_t payload_len, uint8_t *msg,
+                                       size_t msg_len) -> bool {
         ESP_LOGI(TAG, "DateTime response received");
 
-        // TODO: Process datetime data when format is known
-        // size_t PAL = 6;
-        // if (payload_len >= PAL + 7) {
-        //   // Process datetime from payload[PAL] to payload[PAL+6]
-        // }
+        CEDateTime &dtm = *(CEDateTime *) msg;
+        snprintf(this->data_.time_str, sizeof(this->data_.time_str), "%02d:%02d:%02d", bcd2dec(dtm.hour),
+                 bcd2dec(dtm.minute), bcd2dec(dtm.second));
+        snprintf(this->data_.date_str, sizeof(this->data_.date_str), "%02d/%02d/20%02d", bcd2dec(dtm.day),
+                 bcd2dec(dtm.month), bcd2dec(dtm.year));
+        snprintf(this->data_.datetime_str, sizeof(this->data_.datetime_str), "%s %s", this->data_.date_str,
+                 this->data_.time_str);
 
         this->data_.got |= MASK_GOT_DATETIME;
         return true;
       };
 
       prepare_and_send_command(get_command_for_meter(CECmd::DATE_TIME), nullptr, 0,
-                               get_request_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY_TARIFFS,
+                               get_response_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY_TARIFFS,
                                datetime_processor);
     } break;
 
@@ -219,12 +304,16 @@ void CEComponent::loop() {
       uint8_t energy_data[2];
       switch (this->meter_model_) {
         case CEMeterModel::MODEL_CE102:
-          energy_data[0] = 0;
-          energy_data[1] = this->current_tariff_ + 1;  // 1-based tariff number
-          break;
-        case CEMeterModel::MODEL_CE307:
-          energy_data[0] = this->current_tariff_;  // CE307 uses 0-based indexing
+          energy_data[0] = this->current_tariff_;
           energy_data[1] = 0;
+          break;
+        case CEMeterModel::MODEL_CE102_R51:
+          energy_data[0] = 0;
+          energy_data[1] = this->current_tariff_ + 1;
+          break;
+        case CEMeterModel::MODEL_CE307_R33:
+          energy_data[0] = 0;
+          energy_data[1] = this->current_tariff_ + 1;
           break;
         default:
           ESP_LOGW(TAG, "Unsupported meter model for tariff reading");
@@ -234,32 +323,26 @@ void CEComponent::loop() {
 
       uint8_t current_tariff_for_lambda = this->current_tariff_;  // Capture for lambda
 
-      auto energy_processor = [this, current_tariff_for_lambda](const uint8_t *payload, size_t payload_len) -> bool {
-        ESP_LOGI(TAG, "Energy T%d response received, p 0x%p, len %d, expected data block %d",
-                 current_tariff_for_lambda + 1, payload, payload_len, this->request_tracker_.expected_data_size);
+      auto energy_processor = [this, current_tariff_for_lambda](const uint8_t *payload, size_t payload_len,
+                                                                uint8_t *msg, size_t msg_len) -> bool {
+        size_t offset = 0;
+        uint32_t value = 0;
 
-        size_t offset = 8;
-        size_t resp_len = this->request_tracker_.expected_data_size;
-        if (payload_len >= 9 + resp_len) {
-          uint32_t value = 0;
-
-          if (resp_len == 7) {
-            offset += 3;
-          }
-
-          value =
-              payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
-          ESP_LOGI(TAG, "Raw value: %u", value);
-          this->data_.consumption[current_tariff_for_lambda] = value * 10;  // Convert to kWh
-          if (current_tariff_for_lambda == 0) {
-            this->data_.got |= MASK_GOT_TARIFF;  // Set flag only once for all tariffs
-          }
-
-          return true;
-        } else {
-          ESP_LOGW(TAG, "Tariff T%d response too short: %d bytes", current_tariff_for_lambda + 1, payload_len);
-          return false;
+        if (msg_len == 7) {
+          offset = CE_REPLY_DATA + 3;
+        } else if (msg_len == 4) {
+          offset = CE_REPLY_DATA;
         }
+
+        value =
+            payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
+        this->data_.consumption[current_tariff_for_lambda] = value * 10;  // Convert to kWh
+        ESP_LOGI(TAG, "Energy T%d = %d Wh", current_tariff_for_lambda + 1, value * 10);
+        if (current_tariff_for_lambda == 0) {
+          this->data_.got |= MASK_GOT_TARIFF;  // Set flag only once for all tariffs
+        }
+
+        return true;
       };
 
       // Increment tariff counter for next iteration
@@ -302,7 +385,7 @@ void CEComponent::loop() {
 
       // Publish meter info
       if (this->network_address_text_sensor_ != nullptr) {
-        this->network_address_text_sensor_->publish_state(this->data_.meter_info.network_address_str);
+        this->network_address_text_sensor_->publish_state(to_string(this->data_.meter_info.network_address));
       }
       if (this->serial_nr_text_sensor_ != nullptr) {
         this->serial_nr_text_sensor_->publish_state(this->data_.meter_info.serial_str);
@@ -345,8 +428,8 @@ void CEComponent::update() {
 }
 
 void CEComponent::prepare_and_send_command(uint16_t cmd, const uint8_t *data, size_t data_len,
-                                           size_t expected_data_size, State next_state, ResponseProcessor processor) {
-  ESP_LOGV(TAG, "Starting async request for command %d", static_cast<uint8_t>(cmd));
+                                           size_t expected_message_len, State next_state, ResponseProcessor processor) {
+  ESP_LOGV(TAG, "Starting async request for command %d, expected mesg len %d", (uint8_t) (cmd), expected_message_len);
 
   if (cmd == 0) {
     ESP_LOGV(TAG, " - No command to send");
@@ -359,7 +442,7 @@ void CEComponent::prepare_and_send_command(uint16_t cmd, const uint8_t *data, si
   this->request_tracker_.start_time = millis();
   this->request_tracker_.bytes_read = 0;
   this->request_tracker_.waiting_for_end = false;
-  this->request_tracker_.expected_data_size = expected_data_size;
+  this->request_tracker_.expected_message_len = expected_message_len;
   this->request_tracker_.response_processor = processor;
   this->rx_buffer_pos_ = 0;
 
@@ -417,10 +500,10 @@ bool CEComponent::process_response() {
 
 bool CEComponent::process_received_data() {
   if (this->rx_buffer_pos_ == 0) {
-    ESP_LOGW(TAG, "Empty response received");
+    ESP_LOGE(TAG, "Empty response received");
     return false;
   }
-  ESP_LOGVV(TAG, "Raw RX data (SLIPPED): %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
+  ESP_LOGVV(TAG, "Raw RX data (Un-Slipped): %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
 
   // Decode SLIP-like encoding
   if (!decode_ce_packet(this->rx_buffer_, this->rx_buffer_pos_)) {
@@ -431,21 +514,53 @@ bool CEComponent::process_received_data() {
   ESP_LOGV(TAG, "Processing command response: 0x%04X", static_cast<uint16_t>(this->request_tracker_.current_cmd));
   ESP_LOGVV(TAG, "Decoded payload: %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
 
-  // expected length
-  size_t expected_len =
-      9 + this->request_tracker_.expected_data_size;  // OPT(1)+ADDR(2)+SRC(2)+PASSWD(4)+SERV(1)+CMD(2)+DATA+CRC(1)
-  if (expected_len != this->rx_buffer_pos_) {
-    ESP_LOGE(TAG, "Wrong expected length: %d, Received length: %d", expected_len, this->rx_buffer_pos_);
+  if (this->rx_buffer_pos_ < CE_REPLY_FRAME_MIN_LEN) {
+    ESP_LOGE(TAG, "Response too short: %d bytes", this->rx_buffer_pos_);
     return false;
   }
 
-  ESP_LOGV(TAG, "Expected length: %d, Received length: %d", expected_len, this->rx_buffer_pos_);
+  // check crc
+  uint8_t received_crc = this->rx_buffer_[this->rx_buffer_pos_ - 1];
+  uint8_t calculated_crc = crc8_ce(this->rx_buffer_, this->rx_buffer_pos_ - 1);
 
+  if (received_crc != calculated_crc) {
+    ESP_LOGE(TAG, "CRC check failed");
+    return false;
+  }
+  Serv serv{0};
+  serv.raw = (uint8_t) this->rx_buffer_[CE_REPLY_SERV_BYTE];
+  ESP_LOGVV(TAG, "Service byte: Dir %d, Class %d, Length %d", serv.direction, serv.class_access, serv.message_len);
+
+  // check if class access = 7 it is error, then data len shall be 1 and error is in data
+  if (serv.class_access == 7) {
+    if (serv.message_len != 1) {
+      ESP_LOGE(TAG, "Error response with invalid length: %d", serv.message_len);
+      return false;
+    } else {
+      ESP_LOGW(TAG, "Error response from meter received: %d", this->rx_buffer_[CE_REPLY_DATA]);
+      return false;
+    }
+  }
+
+  if (serv.class_access != 5) {
+    ESP_LOGW(TAG, "Unexpected reply class access: %d, shall be 5", serv.class_access);
+    return false;
+  }
+
+  if (serv.message_len != this->request_tracker_.expected_message_len) {
+    ESP_LOGE(TAG, "Wrong length. expected: %d, received: %d", this->request_tracker_.expected_message_len,
+             serv.message_len);
+    return false;
+  }
+
+  this->rx_buffer_pos_--;  // remove CRC
   this->data_.proper_reads++;
 
   // Use the lambda function to process the response
   if (this->request_tracker_.response_processor) {
-    return this->request_tracker_.response_processor(this->rx_buffer_, this->rx_buffer_pos_);
+    return this->request_tracker_.response_processor(this->rx_buffer_, this->rx_buffer_pos_,
+                                                     serv.message_len ? this->rx_buffer_ + CE_REPLY_DATA : nullptr,
+                                                     serv.message_len);
   } else {
     ESP_LOGE(TAG, "No response processor available for command 0x%04X",
              static_cast<uint16_t>(this->request_tracker_.current_cmd));
@@ -517,8 +632,8 @@ size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd
   uint16_t cmd_val = static_cast<uint16_t>(cmd);
   uint8_t cmd_h = (cmd_val >> 8) & 0xFF;
   uint8_t cmd_l = cmd_val & 0xFF;
-  payload[payload_len++] = cmd_h;
   payload[payload_len++] = cmd_l;
+  payload[payload_len++] = cmd_h;
 
   // Add data if any
   if (data != nullptr && data_len > 0) {
@@ -602,6 +717,43 @@ uint8_t CEComponent::crc8_ce(const uint8_t *buffer, size_t len) {
   return crc;
 }
 
+void CEComponent::reverse_string_inplace(char *str) {
+  if (str == nullptr) {
+    return;
+  }
+
+  // Find string length
+  size_t len = 0;
+  while (str[len] != '\0') {
+    len++;
+  }
+
+  // Return early if string is empty or has only one character
+  if (len <= 1) {
+    return;
+  }
+
+  // Reverse the string by swapping characters from both ends
+  size_t start = 0;
+  size_t end = len - 1;
+
+  while (start < end) {
+    // Swap characters
+    char temp = str[start];
+    str[start] = str[end];
+    str[end] = temp;
+
+    start++;
+    end--;
+  }
+
+  // Example usage:
+  // char test[] = "hello";
+  // reverse_string_inplace(test);  // Result: "olleh"
+  // char test2[] = "12345";
+  // reverse_string_inplace(test2); // Result: "54321"
+}
+
 const char *CEComponent::state_to_string(State state) {
   switch (state) {
     case State::NOT_INITIALIZED:
@@ -612,8 +764,12 @@ const char *CEComponent::state_to_string(State state) {
       return "WAITING_FOR_RESPONSE";
     case State::PING_METER:
       return "PING_METER";
-    case State::GET_SERIAL_NR:
-      return "GET_SERIAL_NR";
+    case State::GET_VERSION:
+      return "GET_VERSION";
+    case State::GET_SERIAL_NR_0:
+      return "GET_SERIAL_NR_0";
+    case State::GET_SERIAL_NR_1:
+      return "GET_SERIAL_NR_1";
     case State::GET_DATETIME:
       return "GET_DATETIME";
     case State::GET_ENERGY_TARIFFS:
