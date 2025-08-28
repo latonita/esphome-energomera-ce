@@ -68,6 +68,19 @@ sensor:
     tariff_1: "Energy T1"
     tariff_2: "Energy T2"
 
+    voltage_a: "Voltage A"
+    voltage_b: "Voltage B"
+    voltage_c: "Voltage C"
+
+    current_a: "Irms A"
+    current_b: "Irms B"
+    current_c: "Irms C"
+
+    power_a: "Power A"
+    power_b: "Power B"
+    power_c: "Power C"
+    
+
 text_sensor:
   - platform: energomera_ce
     serial_nr: "Meter Serial Number"
@@ -95,4 +108,17 @@ ota:
 
 ```
 
+Для однофазных
+```<yaml>
 
+
+sensor:
+  - platform: energomera_ce
+    tariff_1: "Energy T1"
+    tariff_2: "Energy T2"
+
+    voltage: "Voltage"
+    current: "Irms"
+    power: "Power"
+
+```

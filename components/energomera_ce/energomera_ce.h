@@ -20,15 +20,18 @@ struct InternalDataState {
   struct MeterInfo {
     uint32_t serial_number{0};
     uint16_t network_address{0};
-    char serial_str[32]{0};
+    char serial_str[32]{};
     bool ping_successful{false};
   } meter_info;
 
   float consumption[TARIFF_COUNT];
-  float power;
-  char time_str[9]{0};       // "23:59:59"
-  char date_str[11]{0};      // "30/08/2023"
-  char datetime_str[25]{0};  // "30/08/2023 23:59:59"
+  float power[3]{};
+  float voltage[3]{};
+  float current[3]{};
+
+  char time_str[9]{};       // "23:59:59"
+  char date_str[11]{};      // "30/08/2023"
+  char datetime_str[25]{};  // "30/08/2023 23:59:59"
 
   uint32_t proper_reads{0};
   uint32_t read_errors{0};
@@ -51,7 +54,9 @@ enum class CECmd : uint8_t {
   SERIAL_NR,
   DATE_TIME,
   ENERGY_BY_TARIFF,
+  VOLTAGE,
   POWER,
+  CURRENT,
   CMD_COUNT,
 };
 
@@ -68,6 +73,18 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
 #endif
 #ifdef USE_SENSOR
   sensor::Sensor *tariff_consumption_[TARIFF_COUNT] = {{nullptr}};
+  SUB_SENSOR(power)
+  SUB_SENSOR(power_a)
+  SUB_SENSOR(power_b)
+  SUB_SENSOR(power_c)
+  SUB_SENSOR(current)
+  SUB_SENSOR(current_a)
+  SUB_SENSOR(current_b)
+  SUB_SENSOR(current_c)
+  SUB_SENSOR(voltage)
+  SUB_SENSOR(voltage_a)
+  SUB_SENSOR(voltage_b)
+  SUB_SENSOR(voltage_c)
 #endif
 
  public:
@@ -136,7 +153,10 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
     GET_SERIAL_NR_0,
     GET_SERIAL_NR_1,
     GET_DATETIME,
-    GET_ENERGY_TARIFFS,
+    GET_ENERGY,
+    GET_VOLTAGE,
+    GET_CURRENT,
+    GET_POWER,
     PUBLISH_INFO,
   } state_{State::NOT_INITIALIZED};
 
@@ -167,6 +187,36 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   ResponseProcessor get_serial_processor();
   ResponseProcessor get_datetime_processor();
   ResponseProcessor get_energy_processor(uint8_t tariff_zero_based);
+  ResponseProcessor get_voltage_processor();
+  ResponseProcessor get_current_processor();
+  ResponseProcessor get_power_processor();
+
+  inline bool has_voltage_sensors() const {
+    auto ret = false;
+#ifdef USE_SENSOR
+    ret = this->voltage_sensor_ != nullptr || this->voltage_a_sensor_ != nullptr ||
+          this->voltage_b_sensor_ != nullptr || this->voltage_c_sensor_ != nullptr;
+#endif
+    return ret;
+  }
+
+  inline bool has_current_sensors() const {
+    auto ret = false;
+#ifdef USE_SENSOR
+    ret = this->current_sensor_ != nullptr || this->current_a_sensor_ != nullptr ||
+          this->current_b_sensor_ != nullptr || this->current_c_sensor_ != nullptr;
+#endif
+    return ret;
+  }
+
+  inline bool has_power_sensors() const {
+    auto ret = false;
+#ifdef USE_SENSOR
+    ret = this->power_sensor_ != nullptr || this->power_a_sensor_ != nullptr || this->power_b_sensor_ != nullptr ||
+          this->power_c_sensor_ != nullptr;
+#endif
+    return ret;
+  }
 };
 
 }  // namespace energomera_ce

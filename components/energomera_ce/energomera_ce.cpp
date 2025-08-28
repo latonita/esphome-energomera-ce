@@ -13,6 +13,9 @@
 #define MASK_GOT_SERIAL 0b010
 #define MASK_GOT_TARIFF 0b100
 #define MASK_GOT_DATETIME 0b1000
+#define MASK_GOT_VOLTAGE 0b10000
+#define MASK_GOT_CURRENT 0b100000
+#define MASK_GOT_POWER 0b1000000
 
 namespace esphome {
 namespace energomera_ce {
@@ -46,11 +49,19 @@ constexpr uint8_t CE_REPLY_DATA = 8;
 // 1026 CE102 R8
 // 1027 CE102 R5.1
 // 3073 или 3079 - CE307.
-const std::unordered_map<uint16_t, std::string> CE_VERSIONS = {
-    {1020, "CE102 R8 OKPQZ"}, {1022, "CE102 S6, R5 AK"}, {1023, "CE102 S6, R5 OK"},
-    {1024, "CE102 S7 J"},     {1025, "CE102 S7"},        {1026, "CE102 R8"},
-    {1027, "CE102 R5.1"},     {3073, "CE307"},           {3079, "CE307"}};
-    
+const std::unordered_map<uint16_t, std::string> CE_VERSIONS = {{1020, "CE102 (R8 OKPQZ)"},
+                                                               {1022, "CE102 (S6, R5 AK)"},
+                                                               {1023, "CE102 (S6, R5 OK)"},
+                                                               {1024, "CE102 (S7 J)"},
+                                                               {1025, "CE102 (S7)"},
+                                                               {1026, "CE102 (R8)"},
+                                                               {1027, "CE102 (R5.1)"},
+                                                               {3010, "CE301M (R33, S31)"},
+                                                               {3060, "CE306 (R33, S31)"},
+                                                               {3070, "CE307 (R33, S31)"},
+                                                               {3073, "CE307"},
+                                                               {3079, "CE307"}};
+
 #pragma pack(1)
 // bit 7 - direction req/resp
 // bit 6-4 - class access
@@ -75,17 +86,17 @@ struct CEDateTime {
 };
 #pragma pack(0)
 
-// now for each model we need to have: for each request: its command code, bytes in, bytes out. array.
+// now for each model we need to have: for each request: {command, bytes in, bytes out}
 uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
-    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  POWER
+    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER
     // MODEL_UNKNOWN
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
     // MODEL_CE102
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0132, 0, 3}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 4}, {0x0000, 0, 0}, {0x0132, 0, 3}},
     // MODEL_CE102_R51
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0182, 0, 4}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 2}, {0x0182, 0, 2}},
     // MODEL_CE307_R33
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0000, 0, 0}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 6}, {0x0182, 0, 4}},
 };
 
 // CRC-8 table for CE protocol (from the library)
@@ -236,11 +247,11 @@ void CEComponent::loop() {
       this->log_state_();
 
       prepare_and_send_command(get_command_for_meter(CECmd::DATE_TIME), nullptr, 0,
-                               get_response_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY_TARIFFS,
+                               get_response_size_for_meter(CECmd::DATE_TIME), State::GET_ENERGY,
                                get_datetime_processor());
     } break;
 
-    case State::GET_ENERGY_TARIFFS: {
+    case State::GET_ENERGY: {
       this->log_state_();
 
       // Check if we've read all tariffs
@@ -273,12 +284,41 @@ void CEComponent::loop() {
 
       uint8_t tariff = this->current_tariff_;  // Capture for lambda
       this->current_tariff_++;
-      State next_state = (this->current_tariff_ < TARIFF_COUNT) ? State::GET_ENERGY_TARIFFS : State::PUBLISH_INFO;
+      State next_state = (this->current_tariff_ < TARIFF_COUNT) ? State::GET_ENERGY : State::GET_VOLTAGE;
 
       prepare_and_send_command(get_command_for_meter(CECmd::ENERGY_BY_TARIFF), energy_data, data_len,
                                get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF), next_state,
                                get_energy_processor(tariff));
 
+    } break;
+
+    case State::GET_VOLTAGE: {
+      this->log_state_();
+      this->state_ = State::GET_CURRENT;
+      if (this->has_voltage_sensors()) {
+        prepare_and_send_command(get_command_for_meter(CECmd::VOLTAGE), nullptr, 0,
+                                 get_response_size_for_meter(CECmd::VOLTAGE), State::GET_CURRENT,
+                                 get_voltage_processor());
+      }
+    } break;
+
+    case State::GET_CURRENT: {
+      this->log_state_();
+      this->state_ = State::GET_POWER;
+      if (this->has_current_sensors()) {
+        prepare_and_send_command(get_command_for_meter(CECmd::CURRENT), nullptr, 0,
+                                 get_response_size_for_meter(CECmd::CURRENT), State::GET_POWER,
+                                 get_current_processor());
+      }
+    } break;
+
+    case State::GET_POWER: {
+      this->log_state_();
+      this->state_ = State::PUBLISH_INFO;
+      if (this->has_power_sensors()) {
+        prepare_and_send_command(get_command_for_meter(CECmd::POWER), nullptr, 0,
+                                 get_response_size_for_meter(CECmd::POWER), State::PUBLISH_INFO, get_power_processor());
+      }
     } break;
 
     case State::PUBLISH_INFO: {
@@ -643,38 +683,6 @@ uint8_t CEComponent::crc8_ce(const uint8_t *buffer, size_t len) {
   return crc;
 }
 
-// for future for CE102 S7J(V10), CE306 R33(V10), CE306 S31(V10)
-
-// constexpr uint16_t CRC16_CCITT_POLY = 0x1021;  // x^16 + x^12 + x^5 + 1
-// constexpr uint16_t CRC16_CCITT_INIT = 0xFFFF;  // start value
-
-// uint16_t crc16_ccitt(const void *data, std::size_t len, uint16_t crc = CRC16_CCITT_INIT) {
-//   const uint8_t *p = static_cast<const uint8_t *>(data);
-//   while (len--) {
-//     crc ^= static_cast<uint16_t>(*p++) << 8;
-//     for (int i = 0; i < 8; ++i) {
-//       crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ CRC16_CCITT_POLY) : static_cast<uint16_t>(crc << 1);
-//     }
-//   }
-//   return crc;  // no final XOR for CCITT-FALSE
-// }
-// //---------------------------------------------------------------------------------------
-// //  The standard 16-bit CRC polynomial specified in ISO/IEC 3309 is used.
-// //             16   12   5
-// //  Which is: x  + x  + x + 1
-// //----------------------------------------------------------------------------
-// uint16_t CE2727aComponent::crc_16_iec(const uint8_t *buffer, uint16_t len) {
-//   uint16_t crc = 0xffff;
-//   uint8_t d;
-//   do {
-//     d = *buffer++ ^ (crc & 0xFF);
-//     d ^= d << 4;
-//     crc = (d << 3) ^ (d << 8) ^ (crc >> 8) ^ (d >> 4);
-//   } while (--len);
-//   crc ^= 0xFFFF;
-//   return crc;
-// }
-
 void CEComponent::reverse_string_inplace(char *str) {
   if (str == nullptr) {
     return;
@@ -724,8 +732,14 @@ const char *CEComponent::state_to_string(State state) {
       return "GET_SERIAL_NR_1";
     case State::GET_DATETIME:
       return "GET_DATETIME";
-    case State::GET_ENERGY_TARIFFS:
-      return "GET_ENERGY_TARIFFS";
+    case State::GET_ENERGY:
+      return "GET_ENERGY";
+    case State::GET_VOLTAGE:
+      return "GET_VOLTAGE";
+    case State::GET_CURRENT:
+      return "GET_CURRENT";
+    case State::GET_POWER:
+      return "GET_POWER";
     case State::PUBLISH_INFO:
       return "PUBLISH_INFO";
     default:
@@ -824,11 +838,50 @@ ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff_zero_based) {
     }
 
     value = payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
-    this->data_.consumption[tariff_zero_based] = value * 10;  // Convert to kWh
-    ESP_LOGI(TAG, "Energy T%d = %d Wh", tariff_zero_based + 1, value * 10);
+    this->data_.consumption[tariff_zero_based] = 0.01f * (float) value;  // Convert to kWh
+    ESP_LOGI(TAG, "Energy T%d = %.2f kWh", tariff_zero_based + 1, (0.01f * (float) value));
 
     this->data_.got |= MASK_GOT_TARIFF;
 
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_voltage_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    // either 2 or 6. one phase or 3 phases
+    for (int i = 0; i < msg_len / 2; i++) {
+      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+      this->data_.voltage[i] = 0.01f * (float) value;  // Convert to V
+      ESP_LOGI(TAG, "Voltage[%d] = %.2f V", i, (0.01f * (float) this->data_.voltage[i]));
+    }
+    this->data_.got |= MASK_GOT_VOLTAGE;
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_current_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    // either 2 or 6. one phase or 3 phases
+    for (int i = 0; i < msg_len / 2; i++) {
+      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+      this->data_.current[i] = 0.001f * (float) value;  // Convert to A
+      ESP_LOGI(TAG, "Current[%d] = %.3f A", i, (0.001f * (float) this->data_.current[i]));
+    }
+    this->data_.got |= MASK_GOT_CURRENT;
+    return true;
+  };
+}
+
+ResponseProcessor CEComponent::get_power_processor() {
+  return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+    // either 2 or 6. one phase or 3 phases
+    for (int i = 0; i < msg_len / 2; i++) {
+      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+      this->data_.power[i] = 0.001f * (float) value;  // Convert to W
+      ESP_LOGI(TAG, "Power[%d] = %.3f W", i, (0.001f * (float) this->data_.power[i]));
+    }
+    this->data_.got |= MASK_GOT_POWER;
     return true;
   };
 }
