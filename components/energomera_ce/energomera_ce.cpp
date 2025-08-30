@@ -88,15 +88,15 @@ struct CEDateTime {
 
 // now for each model we need to have: for each request: {command, bytes in, bytes out}
 uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
-    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER
+    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER     CURRENT 
     // MODEL_UNKNOWN
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
     // MODEL_CE102
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 4}, {0x0000, 0, 0}, {0x0132, 0, 3}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 4}, {0x0000, 0, 0}, {0x0132, 0, 3}, {0x0000, 0, 0}},
     // MODEL_CE102_R51
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 2}, {0x0182, 0, 2}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 2}, {0x0182, 0, 2}, {0x0181, 0, 4}},
     // MODEL_CE307_R33
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 6}, {0x0182, 0, 4}},
+    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 6}, {0x0182, 0, 4}, {0x0181, 0, 4}},
 };
 
 // CRC-8 table for CE protocol (from the library)
@@ -173,6 +173,8 @@ uint16_t CEComponent::get_response_size_for_meter(CECmd cmd) {
 void CEComponent::loop() {
   if (!this->is_ready())
     return;
+
+  uint8_t phases_count = this->meter_model_ == CEMeterModel::MODEL_CE307_R33 ? 3 : 1;
 
   switch (this->state_) {
     case State::NOT_INITIALIZED: {
@@ -278,7 +280,7 @@ void CEComponent::loop() {
           break;
         default:
           ESP_LOGW(TAG, "Unsupported meter model for tariff reading");
-          this->state_ = State::PUBLISH_INFO;
+          this->state_ = State::GET_VOLTAGE;
           break;
       }
 
@@ -295,9 +297,10 @@ void CEComponent::loop() {
     case State::GET_VOLTAGE: {
       this->log_state_();
       this->state_ = State::GET_CURRENT;
+
       if (this->has_voltage_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::VOLTAGE), nullptr, 0,
-                                 get_response_size_for_meter(CECmd::VOLTAGE), State::GET_CURRENT,
+                                 phases_count * get_response_size_for_meter(CECmd::VOLTAGE), State::GET_CURRENT,
                                  get_voltage_processor());
       }
     } break;
@@ -307,7 +310,7 @@ void CEComponent::loop() {
       this->state_ = State::GET_POWER;
       if (this->has_current_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::CURRENT), nullptr, 0,
-                                 get_response_size_for_meter(CECmd::CURRENT), State::GET_POWER,
+                                 phases_count * get_response_size_for_meter(CECmd::CURRENT), State::GET_POWER,
                                  get_current_processor());
       }
     } break;
@@ -317,7 +320,8 @@ void CEComponent::loop() {
       this->state_ = State::PUBLISH_INFO;
       if (this->has_power_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::POWER), nullptr, 0,
-                                 get_response_size_for_meter(CECmd::POWER), State::PUBLISH_INFO, get_power_processor());
+                                 phases_count * get_response_size_for_meter(CECmd::POWER), State::PUBLISH_INFO,
+                                 get_power_processor());
       }
     } break;
 

@@ -42,9 +42,9 @@ struct InternalDataState {
 
 enum class CEMeterModel : uint8_t {
   MODEL_UNKNOWN = 0,
-  MODEL_CE102,
-  MODEL_CE102_R51,
-  MODEL_CE307_R33,
+  MODEL_CE102 = 1,
+  MODEL_CE102_R51 = 2,
+  MODEL_CE307_R33 = 3,
   MODEL_COUNT,
 };
 
