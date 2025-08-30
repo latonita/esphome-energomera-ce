@@ -124,7 +124,7 @@ uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUN
      {0x0130, 2, 7},
      {0x0180, 0, 6},
      {0x0182, 0, 12},
-     {0x0181, 0, 12}},
+     {0x0181, 0, 6}},
 };
 
 // CRC-8 table for CE protocol (from the library)
