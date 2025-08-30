@@ -88,15 +88,43 @@ struct CEDateTime {
 
 // now for each model we need to have: for each request: {command, bytes in, bytes out}
 uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
-    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER     CURRENT 
+    // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER     CURRENT
     // MODEL_UNKNOWN
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}, {0x0000, 0, 0}},
+    {{0x0001, 0, 2},
+     {0x0100, 0, 6},
+     {0x011A, 1, 8},
+     {0x0000, 0, 0},
+     {0x0000, 0, 0},
+     {0x0000, 0, 0},
+     {0x0000, 0, 0},
+     {0x0000, 0, 0}},
     // MODEL_CE102
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 4}, {0x0000, 0, 0}, {0x0132, 0, 3}, {0x0000, 0, 0}},
+    {{0x0001, 0, 2},
+     {0x0100, 0, 6},
+     {0x011A, 1, 8},
+     {0x0120, 0, 7},
+     {0x0130, 2, 4},
+     {0x0000, 0, 0},
+     {0x0132, 0, 3},
+     {0x0000, 0, 0}},
     // MODEL_CE102_R51
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 2}, {0x0182, 0, 2}, {0x0181, 0, 4}},
+    {{0x0001, 0, 2},
+     {0x0100, 0, 6},
+     {0x011A, 1, 8},
+     {0x0120, 0, 7},
+     {0x0130, 2, 7},
+     {0x0180, 0, 2},
+     {0x0182, 0, 2},
+     {0x0181, 0, 4}},
     // MODEL_CE307_R33
-    {{0x0001, 0, 2}, {0x0100, 0, 6}, {0x011A, 1, 8}, {0x0120, 0, 7}, {0x0130, 2, 7}, {0x0180, 0, 6}, {0x0182, 0, 4}, {0x0181, 0, 4}},
+    {{0x0001, 0, 2},
+     {0x0100, 0, 6},
+     {0x011A, 1, 8},
+     {0x0120, 0, 7},
+     {0x0130, 2, 7},
+     {0x0180, 0, 6},
+     {0x0182, 0, 12},
+     {0x0181, 0, 12}},
 };
 
 // CRC-8 table for CE protocol (from the library)
@@ -173,8 +201,6 @@ uint16_t CEComponent::get_response_size_for_meter(CECmd cmd) {
 void CEComponent::loop() {
   if (!this->is_ready())
     return;
-
-  uint8_t phases_count = this->meter_model_ == CEMeterModel::MODEL_CE307_R33 ? 3 : 1;
 
   switch (this->state_) {
     case State::NOT_INITIALIZED: {
@@ -300,7 +326,7 @@ void CEComponent::loop() {
 
       if (this->has_voltage_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::VOLTAGE), nullptr, 0,
-                                 phases_count * get_response_size_for_meter(CECmd::VOLTAGE), State::GET_CURRENT,
+                                 get_response_size_for_meter(CECmd::VOLTAGE), State::GET_CURRENT,
                                  get_voltage_processor());
       }
     } break;
@@ -310,7 +336,7 @@ void CEComponent::loop() {
       this->state_ = State::GET_POWER;
       if (this->has_current_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::CURRENT), nullptr, 0,
-                                 phases_count * get_response_size_for_meter(CECmd::CURRENT), State::GET_POWER,
+                                 get_response_size_for_meter(CECmd::CURRENT), State::GET_POWER,
                                  get_current_processor());
       }
     } break;
@@ -320,8 +346,7 @@ void CEComponent::loop() {
       this->state_ = State::PUBLISH_INFO;
       if (this->has_power_sensors()) {
         prepare_and_send_command(get_command_for_meter(CECmd::POWER), nullptr, 0,
-                                 phases_count * get_response_size_for_meter(CECmd::POWER), State::PUBLISH_INFO,
-                                 get_power_processor());
+                                 get_response_size_for_meter(CECmd::POWER), State::PUBLISH_INFO, get_power_processor());
       }
     } break;
 
@@ -851,11 +876,14 @@ ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff_zero_based) {
   };
 }
 
+constexpr size_t DATA2_SIZE = 2;
+constexpr size_t DATA4_SIZE = 4;
+
 ResponseProcessor CEComponent::get_voltage_processor() {
   return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
     // either 2 or 6. one phase or 3 phases
-    for (int i = 0; i < msg_len / 2; i++) {
-      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+    for (int i = 0; i < msg_len / DATA2_SIZE; i++) {
+      uint16_t value = msg[i * DATA2_SIZE] | (msg[i * DATA2_SIZE + 1] << 8);
       this->data_.voltage[i] = 0.01f * (float) value;  // Convert to V
       ESP_LOGI(TAG, "Voltage[%d] = %.2f V", i, (0.01f * (float) this->data_.voltage[i]));
     }
@@ -867,8 +895,8 @@ ResponseProcessor CEComponent::get_voltage_processor() {
 ResponseProcessor CEComponent::get_current_processor() {
   return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
     // either 2 or 6. one phase or 3 phases
-    for (int i = 0; i < msg_len / 2; i++) {
-      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+    for (int i = 0; i < msg_len / DATA2_SIZE; i++) {
+      uint16_t value = msg[i * DATA2_SIZE] | (msg[i * DATA2_SIZE + 1] << 8);
       this->data_.current[i] = 0.001f * (float) value;  // Convert to A
       ESP_LOGI(TAG, "Current[%d] = %.3f A", i, (0.001f * (float) this->data_.current[i]));
     }
@@ -879,9 +907,11 @@ ResponseProcessor CEComponent::get_current_processor() {
 
 ResponseProcessor CEComponent::get_power_processor() {
   return [this](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
-    // either 2 or 6. one phase or 3 phases
-    for (int i = 0; i < msg_len / 2; i++) {
-      uint16_t value = msg[i * 2] | (msg[i * 2 + 1] << 8);
+    // either 4 or 12. one phase or 3 phases
+
+    for (int i = 0; i < msg_len / DATA4_SIZE; i++) {
+      uint32_t value = msg[i * DATA4_SIZE] | (msg[i * DATA4_SIZE + 1] << 8) | (msg[i * DATA4_SIZE + 2] << 16) |
+                       (msg[i * DATA4_SIZE + 3] << 24);
       this->data_.power[i] = 0.001f * (float) value;  // Convert to W
       ESP_LOGI(TAG, "Power[%d] = %.3f W", i, (0.001f * (float) this->data_.power[i]));
     }
