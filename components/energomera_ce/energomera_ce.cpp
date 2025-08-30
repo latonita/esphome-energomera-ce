@@ -362,8 +362,8 @@ void CEComponent::loop() {
         return;
       }
 
-      uint8_t expected_mask = MASK_GOT_PING | MASK_GOT_SERIAL | MASK_GOT_TARIFF;
-      if (this->data_.got == expected_mask) {
+      uint8_t expected_mask_min = MASK_GOT_PING | MASK_GOT_SERIAL;
+      if (this->data_.got > expected_mask_min) {
         if (this->reading_state_text_sensor_ != nullptr) {
           this->reading_state_text_sensor_->publish_state(STATE_OK);
         }
@@ -403,6 +403,57 @@ void CEComponent::loop() {
         }
         if (this->datetime_text_sensor_ != nullptr) {
           this->datetime_text_sensor_->publish_state(this->data_.datetime_str);
+        }
+      }
+
+      if (this->data_.got & MASK_GOT_CURRENT) {
+        if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
+          if (this->current_a_sensor_ != nullptr) {
+            this->current_a_sensor_->publish_state(this->data_.current[0]);
+          }
+          if (this->current_b_sensor_ != nullptr) {
+            this->current_b_sensor_->publish_state(this->data_.current[1]);
+          }
+          if (this->current_c_sensor_ != nullptr) {
+            this->current_c_sensor_->publish_state(this->data_.current[2]);
+          }
+        } else {
+          if (this->current_sensor_ != nullptr) {
+            this->current_sensor_->publish_state(this->data_.current[0]);
+          }
+        }
+      }
+      if (this->data_.got & MASK_GOT_VOLTAGE) {
+        if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
+          if (this->voltage_a_sensor_ != nullptr) {
+            this->voltage_a_sensor_->publish_state(this->data_.voltage[0]);
+          }
+          if (this->voltage_b_sensor_ != nullptr) {
+            this->voltage_b_sensor_->publish_state(this->data_.voltage[1]);
+          }
+          if (this->voltage_c_sensor_ != nullptr) {
+            this->voltage_c_sensor_->publish_state(this->data_.voltage[2]);
+          }
+        } else if (this->voltage_sensor_ != nullptr) {
+          this->voltage_sensor_->publish_state(this->data_.voltage[0]);
+        }
+      }
+      if (this->data_.got & MASK_GOT_POWER) {
+        if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
+          if (this->power_a_sensor_ != nullptr) {
+            this->power_a_sensor_->publish_state(this->data_.power[0]);
+          }
+          if (this->power_b_sensor_ != nullptr) {
+            this->power_b_sensor_->publish_state(this->data_.power[1]);
+          }
+          if (this->power_c_sensor_ != nullptr) {
+            this->power_c_sensor_->publish_state(this->data_.power[2]);
+          }
+          if (this->power_sensor_ != nullptr) {
+            this->power_sensor_->publish_state(this->data_.power[0] + this->data_.power[1] + this->data_.power[2]);
+          }
+        } else if (this->power_sensor_ != nullptr) {
+          this->power_sensor_->publish_state(this->data_.power[0]);
         }
       }
     } break;
