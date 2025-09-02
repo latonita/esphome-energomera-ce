@@ -58,15 +58,17 @@ uart:
 energomera_ce:
   id: ce_meter
   model: CE307_R33    # UNKNOWN / CE102 / CE102_R51 / CE307_R33
-  address: 1234
+  address: 1234       # последние 5 цифр серийного номера, но если число получается 
+                      # больше 65535, то - последние 4 цифры
   password: 777777
   update_interval: 30s
   #flow_control_pin: GPIO4  # for rs485 with DE/RE
 
 sensor:
   - platform: energomera_ce
-    tariff_1: "Energy T1"
-    tariff_2: "Energy T2"
+    energy_total: "Energy Total"
+    energy_t1: "Energy T1"
+    energy_t2: "Energy T2"
 
     voltage_a: "Voltage A"
     voltage_b: "Voltage B"
@@ -114,11 +116,14 @@ ota:
 
 sensor:
   - platform: energomera_ce
-    tariff_1: "Energy T1"
-    tariff_2: "Energy T2"
+    energy_total: "Energy Total"
+    energy_t1: "Energy T1"
+    energy_t2: "Energy T2"
 
     voltage: "Voltage"
     current: "Irms"
     power: "Power"
+
+    ...
 
 ```

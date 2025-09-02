@@ -86,45 +86,55 @@ struct CEDateTime {
 };
 #pragma pack(0)
 
+constexpr uint16_t CE102_TOTAL_ENERGY = 0x131;
+
 // now for each model we need to have: for each request: {command, bytes in, bytes out}
 uint16_t CECommands[(size_t) CEMeterModel::MODEL_COUNT][(size_t) CECmd::CMD_COUNT][3] = {
     // PING          VERSION         SERIAL           DATE_TIME      ENERGY_BY_TARIFF  VOLTAGE       POWER     CURRENT
     // MODEL_UNKNOWN
-    {{0x0001, 0, 2},
-     {0x0100, 0, 6},
-     {0x011A, 1, 8},
-     {0x0000, 0, 0},
-     {0x0000, 0, 0},
-     {0x0000, 0, 0},
-     {0x0000, 0, 0},
-     {0x0000, 0, 0}},
+    {
+        {0x0001, 0, 2},  // ping
+        {0x0100, 0, 6},  // version
+        {0x011A, 1, 8},  // serial
+        {0x0000, 0, 0},  // date_time
+        {0x0000, 0, 0},  // energy_by_tariff
+        {0x0000, 0, 0},  // voltage
+        {0x0000, 0, 0},  // power
+        {0x0000, 0, 0},  // current
+    },
     // MODEL_CE102
-    {{0x0001, 0, 2},
-     {0x0100, 0, 6},
-     {0x011A, 1, 8},
-     {0x0120, 0, 7},
-     {0x0130, 2, 4},
-     {0x0000, 0, 0},
-     {0x0132, 0, 3},
-     {0x0000, 0, 0}},
+    {
+        {0x0001, 0, 2},  // ping
+        {0x0100, 0, 6},  // version
+        {0x011A, 1, 8},  // serial
+        {0x0120, 0, 7},  // date_time
+        {0x0130, 2, 4},  // energy_by_tariff
+        {0x0000, 0, 0},  // voltage
+        {0x0132, 0, 3},  // power
+        {0x0000, 0, 0},  // current
+    },
     // MODEL_CE102_R51
-    {{0x0001, 0, 2},
-     {0x0100, 0, 6},
-     {0x011A, 1, 8},
-     {0x0120, 0, 7},
-     {0x0130, 2, 7},
-     {0x0180, 0, 2},
-     {0x0182, 0, 2},
-     {0x0181, 0, 4}},
+    {
+        {0x0001, 0, 2},  // ping
+        {0x0100, 0, 6},  // version
+        {0x011A, 1, 8},  // serial
+        {0x0120, 0, 7},  // date_time
+        {0x0130, 2, 7},  // energy_by_tariff
+        {0x0180, 0, 2},  // voltage
+        {0x0182, 0, 2},  // power
+        {0x0181, 0, 4},  // current
+    },
     // MODEL_CE307_R33
-    {{0x0001, 0, 2},
-     {0x0100, 0, 6},
-     {0x011A, 1, 8},
-     {0x0120, 0, 7},
-     {0x0130, 2, 7},
-     {0x0180, 0, 6},
-     {0x0182, 0, 12},
-     {0x0181, 0, 6}},
+    {
+        {0x0001, 0, 2},   // ping
+        {0x0100, 0, 6},   // version
+        {0x011A, 1, 8},   // serial
+        {0x0120, 0, 7},   // date_time
+        {0x0130, 2, 7},   // energy_by_tariff
+        {0x0180, 0, 6},   // voltage
+        {0x0182, 0, 12},  // power
+        {0x0181, 0, 6},   // current
+    },
 };
 
 // CRC-8 table for CE protocol (from the library)
@@ -164,12 +174,12 @@ void CEComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Data errors %d, proper reads %d", this->data_.read_errors, this->data_.proper_reads);
 }
 
-void CEComponent::set_tariff_sensor(uint8_t tariff, sensor::Sensor *sensor) {
+void CEComponent::set_energy_sensor(uint8_t tariff, sensor::Sensor *sensor) {
   if (tariff >= TARIFF_COUNT) {
     ESP_LOGE(TAG, "Invalid tariff %d", tariff);
     return;
   }
-  this->tariff_consumption_[tariff] = sensor;
+  this->energy_sensor_[tariff] = sensor;
 }
 
 void CEComponent::setup() {
@@ -283,26 +293,35 @@ void CEComponent::loop() {
       this->log_state_();
 
       // Check if we've read all tariffs
-      if (this->current_tariff_ >= TARIFF_COUNT) {
+      if (this->current_tariff_ > TARIFF_COUNT) {
         this->state_ = State::PUBLISH_INFO;
         break;
       }
+
+      auto cmd = get_command_for_meter(CECmd::ENERGY_BY_TARIFF);
+      auto cmd_response_size = get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF);
 
       // Prepare data for ENERGY_BY_TARIFF command for current tariff
       size_t data_len = 2;
       uint8_t energy_data[2];
       switch (this->meter_model_) {
         case CEMeterModel::MODEL_CE102:
-          energy_data[0] = this->current_tariff_;
-          energy_data[1] = 0;
+          if (this->current_tariff_ == 0) {
+            data_len = 1;
+            cmd = CE102_TOTAL_ENERGY;
+            energy_data[0] = 0;  // Total
+          } else {
+            energy_data[0] = this->current_tariff_ - 1;
+            energy_data[1] = 0;
+          }
           break;
         case CEMeterModel::MODEL_CE102_R51:
           energy_data[0] = 0;
-          energy_data[1] = this->current_tariff_ + 1;
+          energy_data[1] = this->current_tariff_;
           break;
         case CEMeterModel::MODEL_CE307_R33:
           energy_data[0] = 0;
-          energy_data[1] = this->current_tariff_ + 1;
+          energy_data[1] = this->current_tariff_;
           break;
         default:
           ESP_LOGW(TAG, "Unsupported meter model for tariff reading");
@@ -314,9 +333,7 @@ void CEComponent::loop() {
       this->current_tariff_++;
       State next_state = (this->current_tariff_ < TARIFF_COUNT) ? State::GET_ENERGY : State::GET_VOLTAGE;
 
-      prepare_and_send_command(get_command_for_meter(CECmd::ENERGY_BY_TARIFF), energy_data, data_len,
-                               get_response_size_for_meter(CECmd::ENERGY_BY_TARIFF), next_state,
-                               get_energy_processor(tariff));
+      prepare_and_send_command(cmd, energy_data, data_len, cmd_response_size, next_state, get_energy_processor(tariff));
 
     } break;
 
@@ -388,9 +405,10 @@ void CEComponent::loop() {
 
       // Publish tariff consumption data
       if (this->data_.got & MASK_GOT_TARIFF) {
-        for (uint8_t tariff = 0; tariff < TARIFF_COUNT; ++tariff) {
-          if (this->tariff_consumption_[tariff] != nullptr) {
-            this->tariff_consumption_[tariff]->publish_state(this->data_.consumption[tariff]);
+        // 0 for total, then 1-4 for tariff
+        for (uint8_t tariff = 0; tariff <= TARIFF_COUNT; ++tariff) {
+          if (this->energy_sensor_[tariff] != nullptr) {
+            this->energy_sensor_[tariff]->publish_state(this->data_.energy_consumption[tariff]);
           }
         }
       }
@@ -906,8 +924,8 @@ ResponseProcessor CEComponent::get_datetime_processor() {
   };
 }
 
-ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff_zero_based) {
-  return [this, tariff_zero_based](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
+ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff) {
+  return [this, tariff](const uint8_t *payload, size_t payload_len, uint8_t *msg, size_t msg_len) -> bool {
     size_t offset = 0;
     uint32_t value = 0;
 
@@ -918,8 +936,12 @@ ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff_zero_based) {
     }
 
     value = payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
-    this->data_.consumption[tariff_zero_based] = 0.01f * (float) value;  // Convert to kWh
-    ESP_LOGI(TAG, "Energy T%d = %.2f kWh", tariff_zero_based + 1, (0.01f * (float) value));
+    this->data_.energy_consumption[tariff] = 0.01f * (float) value;  // Convert to kWh
+    if (tariff == 0) {
+      ESP_LOGI(TAG, "Energy Total = %.2f kWh", tariff, (0.01f * (float) value));
+    } else {
+      ESP_LOGI(TAG, "Energy T%d = %.2f kWh", tariff, (0.01f * (float) value));
+    }
 
     this->data_.got |= MASK_GOT_TARIFF;
 

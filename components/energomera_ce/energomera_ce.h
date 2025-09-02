@@ -9,7 +9,9 @@
 namespace esphome {
 namespace energomera_ce {
 
-constexpr size_t TARIFF_COUNT = 4;  // Number of tariffs
+constexpr size_t TARIFF_COUNT = 4;
+constexpr size_t PHASES = 3;
+
 constexpr size_t MAX_RX_PACKET_SIZE = 128;
 constexpr size_t MAX_TX_PACKET_SIZE = 64;  // Maximum size of a CE command packet
 
@@ -24,10 +26,10 @@ struct InternalDataState {
     bool ping_successful{false};
   } meter_info;
 
-  float consumption[TARIFF_COUNT];
-  float power[3]{};
-  float voltage[3]{};
-  float current[3]{};
+  float energy_consumption[TARIFF_COUNT + 1];  // one for total
+  float power[PHASES]{};
+  float voltage[PHASES]{};
+  float current[PHASES]{};
 
   char time_str[9]{};       // "23:59:59"
   char date_str[11]{};      // "30/08/2023"
@@ -72,7 +74,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   SUB_TEXT_SENSOR(about)
 #endif
 #ifdef USE_SENSOR
-  sensor::Sensor *tariff_consumption_[TARIFF_COUNT] = {{nullptr}};
+  sensor::Sensor *energy_sensor_[TARIFF_COUNT + 1] = {{nullptr}};
   SUB_SENSOR(power)
   SUB_SENSOR(power_a)
   SUB_SENSOR(power_b)
@@ -90,7 +92,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
  public:
   CEComponent() = default;
 
-  void set_tariff_sensor(uint8_t tariff, sensor::Sensor *sensor);
+  void set_energy_sensor(uint8_t tariff, sensor::Sensor *sensor);
 
   void set_meter_model(CEMeterModel model) { this->meter_model_ = model; }
   void set_flow_control_pin(GPIOPin *flow_control_pin) { this->flow_control_pin_ = flow_control_pin; }
@@ -120,7 +122,6 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   uint8_t rx_buffer_[MAX_RX_PACKET_SIZE];
   size_t rx_buffer_pos_{0};
 
-  // Tariff reading counter (0-3 for tariffs 1-4)
   uint8_t current_tariff_{0};
 
   // CRC-8 table for CE protocol
@@ -186,7 +187,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   ResponseProcessor get_version_processor();
   ResponseProcessor get_serial_processor();
   ResponseProcessor get_datetime_processor();
-  ResponseProcessor get_energy_processor(uint8_t tariff_zero_based);
+  ResponseProcessor get_energy_processor(uint8_t tariff_1_based_0_for_total);
   ResponseProcessor get_voltage_processor();
   ResponseProcessor get_current_processor();
   ResponseProcessor get_power_processor();

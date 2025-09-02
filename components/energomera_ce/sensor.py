@@ -11,6 +11,7 @@ from esphome.const import (
     DEVICE_CLASS_ENERGY,
     DEVICE_CLASS_POWER,
     DEVICE_CLASS_VOLTAGE,
+    ICON_CURRENT_AC,
     ICON_POWER,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
@@ -27,10 +28,11 @@ DEPENDENCIES = ["energomera_ce"]
 
 ICON_VOLTAGE = "mdi:sine-wave"
 
-CONF_TARIFF_1 = "tariff_1"
-CONF_TARIFF_2 = "tariff_2"
-CONF_TARIFF_3 = "tariff_3"
-CONF_TARIFF_4 = "tariff_4"
+CONF_ENERGY_TOTAL = "energy_total"
+CONF_ENERGY_T1 = "energy_t1"
+CONF_ENERGY_T2 = "energy_t2"
+CONF_ENERGY_T3 = "energy_t3"
+CONF_ENERGY_T4 = "energy_t4"
 
 CONF_VOLTAGE_A = "voltage_a"
 CONF_VOLTAGE_B = "voltage_b"
@@ -72,6 +74,7 @@ CURRENT_SCHEMA = cv.maybe_simple_value(
         accuracy_decimals=3,
         device_class=DEVICE_CLASS_CURRENT,
         state_class=STATE_CLASS_MEASUREMENT,
+        icon=ICON_CURRENT_AC,
     ),
     key=CONF_NAME,
 )
@@ -82,6 +85,7 @@ ACTIVE_POWER_SCHEMA = cv.maybe_simple_value(
         accuracy_decimals=0,
         device_class=DEVICE_CLASS_POWER,
         state_class=STATE_CLASS_MEASUREMENT,
+        icon = ICON_POWER,
     ),
     key=CONF_NAME,
 )
@@ -89,11 +93,13 @@ ACTIVE_POWER_SCHEMA = cv.maybe_simple_value(
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_CE_ID): cv.use_id(CEComponent),
-        cv.Optional(CONF_TARIFF_1): TARIFF_CONSUMPTION_SCHEMA,
-        cv.Optional(CONF_TARIFF_2): TARIFF_CONSUMPTION_SCHEMA,
-        cv.Optional(CONF_TARIFF_3): TARIFF_CONSUMPTION_SCHEMA,
-        cv.Optional(CONF_TARIFF_4): TARIFF_CONSUMPTION_SCHEMA,
-        
+
+        cv.Optional(CONF_ENERGY_TOTAL): TARIFF_CONSUMPTION_SCHEMA,
+        cv.Optional(CONF_ENERGY_T1): TARIFF_CONSUMPTION_SCHEMA,
+        cv.Optional(CONF_ENERGY_T2): TARIFF_CONSUMPTION_SCHEMA,
+        cv.Optional(CONF_ENERGY_T3): TARIFF_CONSUMPTION_SCHEMA,
+        cv.Optional(CONF_ENERGY_T4): TARIFF_CONSUMPTION_SCHEMA,
+
         cv.Optional(CONF_VOLTAGE): VOLTAGE_SCHEMA,
         cv.Optional(CONF_VOLTAGE_A): VOLTAGE_SCHEMA,
         cv.Optional(CONF_VOLTAGE_B): VOLTAGE_SCHEMA,
@@ -115,12 +121,12 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_CE_ID])
 
-    for i, tariff_key in enumerate([CONF_TARIFF_1, CONF_TARIFF_2, CONF_TARIFF_3,
-                                     CONF_TARIFF_4], start=1):
+    for i, tariff_key in enumerate([CONF_ENERGY_TOTAL, CONF_ENERGY_T1, CONF_ENERGY_T2, CONF_ENERGY_T3,
+                                     CONF_ENERGY_T4], start=0):
         if tariff_key not in config:
             continue
         sens = await sensor.new_sensor(config[tariff_key])
-        cg.add(getattr(hub, f"set_tariff_sensor")(i, sens))
+        cg.add(getattr(hub, f"set_energy_sensor")(i, sens))
     
     if conf_voltage := config.get(CONF_VOLTAGE):
         sens = await sensor.new_sensor(conf_voltage)
