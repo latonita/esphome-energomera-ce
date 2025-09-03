@@ -11,8 +11,8 @@
 
 # Модели ПУ
 
-| Модель     | Версия |  Какой тип надо указать в конфиге | |
-|------------|--------|--------------------------|--|
+| Модель     | Версия |  Какой тип надо указать в конфиге |
+|------------|--------|--------------------------|
 | CE102 R5   | V1-V5  | CE102 |
 | СЕ102 R5.1 |        | CE102_R51 |
 | CE102 R8   | V1-V6  | CE102 |
@@ -26,7 +26,9 @@
 | CE306 R33  | V10    | CE102 |
 | CE306 S31  | V10    | CE102 |
 | CE307 R33  | V1-V3  | CE307_R33 |
-| CE307 R34  |        | нет | см (esphome-dlms-cosem)[http://github.com/latonita/esphome-dlms-cosem] или (esphome-energomera-iec)[http://github.com/latonita/esphome-energomera-iec] |
+| CE307 R34  |        | нет | 
+
+Для CE307 R34 сюда: [esphome-dlms-cosem](http://github.com/latonita/esphome-dlms-cosem) или [esphome-energomera-iec](http://github.com/latonita/esphome-energomera-iec)
 
 
 # Пример конфигурации
@@ -58,7 +60,7 @@ uart:
 energomera_ce:
   id: ce_meter
   model: CE307_R33    # UNKNOWN / CE102 / CE102_R51 / CE307_R33
-  address: 1234       # последние 5 цифр серийного номера, но если число получается 
+  address: 12345      # последние 5 цифр серийного номера, но если число получается 
                       # больше 65535, то - последние 4 цифры
   password: 777777
   update_interval: 30s
@@ -78,9 +80,10 @@ sensor:
     current_b: "Irms B"
     current_c: "Irms C"
 
-    power_a: "Power A"
-    power_b: "Power B"
-    power_c: "Power C"
+    active_power: "Active Power Total"
+    active_power_a: "Active Power A"
+    active_power_b: "Active Power B"
+    active_power_c: "Active Power C"
     
 
 text_sensor:
@@ -98,7 +101,7 @@ wifi:
   password: "testpassword"
 
 logger:
-  level: DEBUG
+  level: INFO
 
 api:
 
@@ -122,8 +125,9 @@ sensor:
 
     voltage: "Voltage"
     current: "Irms"
-    power: "Power"
+    active_power: "Active Power"
 
     ...
 
 ```
+
