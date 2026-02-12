@@ -2,6 +2,30 @@
 #include "esphome/core/log.h"
 #include "energomera_ce.h"
 
+// Put this in your .h file, usually near the class or in a helpers section
+
+#ifdef USE_SENSOR
+  #define PUBLISH_SENSOR(ptr, val) \
+    do { \
+      if ((ptr) != nullptr) { \
+        (ptr)->publish_state((val)); \
+      } \
+    } while (0)
+#else
+  #define PUBLISH_SENSOR(ptr, val)
+#endif
+
+#ifdef USE_TEXT_SENSOR
+  #define PUBLISH_TEXT_SENSOR(ptr, val) \
+    do { \
+      if ((ptr) != nullptr) { \
+        (ptr)->publish_state((val)); \
+      } \
+    } while (0)
+#else
+  #define PUBLISH_TEXT_SENSOR(ptr, val)
+#endif
+
 #define STATE_BOOTUP_WAIT "Waiting to boot up"
 #define STATE_METER_NOT_FOUND "Meter not found"
 #define STATE_METER_FOUND "Meter found"
@@ -179,13 +203,13 @@ void CEComponent::set_energy_sensor(uint8_t tariff, sensor::Sensor *sensor) {
     ESP_LOGE(TAG, "Invalid tariff %d", tariff);
     return;
   }
+#ifdef USE_SENSOR  
   this->energy_sensor_[tariff] = sensor;
+#endif
 }
 
 void CEComponent::setup() {
-  if (this->reading_state_text_sensor_ != nullptr) {
-    this->reading_state_text_sensor_->publish_state(STATE_BOOTUP_WAIT);
-  }
+  PUBLISH_TEXT_SENSOR(this->reading_state_text_sensor_, STATE_BOOTUP_WAIT);
 
   // Configure flow control pin if specified
   if (this->flow_control_pin_ != nullptr) {
@@ -373,22 +397,17 @@ void CEComponent::loop() {
       ESP_LOGD(TAG, "Data errors %d, proper reads %d", this->data_.read_errors, this->data_.proper_reads);
 
       if (!this->data_.meter_found) {
-        if (this->reading_state_text_sensor_ != nullptr) {
-          this->reading_state_text_sensor_->publish_state(STATE_METER_NOT_FOUND);
-        }
+        PUBLISH_TEXT_SENSOR(this->reading_state_text_sensor_, STATE_METER_NOT_FOUND);
         return;
       }
 
       uint8_t expected_mask_min = MASK_GOT_PING | MASK_GOT_SERIAL;
       if (this->data_.got > expected_mask_min) {
-        if (this->reading_state_text_sensor_ != nullptr) {
-          this->reading_state_text_sensor_->publish_state(STATE_OK);
-        }
+        PUBLISH_TEXT_SENSOR(this->reading_state_text_sensor_, STATE_OK);
       } else {
         ESP_LOGW(TAG, "Got no or partial data %o", this->data_.got);
-        if (this->reading_state_text_sensor_ != nullptr) {
-          this->reading_state_text_sensor_->publish_state((this->data_.got == 0) ? STATE_DATA_FAIL : STATE_PARTIAL_OK);
-        }
+        PUBLISH_TEXT_SENSOR(this->reading_state_text_sensor_,
+                            (this->data_.got == 0) ? STATE_DATA_FAIL : STATE_PARTIAL_OK);
       }
 
       if (this->data_.got) {
@@ -396,82 +415,49 @@ void CEComponent::loop() {
       }
 
       // Publish meter info
-      if (this->network_address_text_sensor_ != nullptr) {
-        this->network_address_text_sensor_->publish_state(to_string(this->data_.meter_info.network_address));
-      }
-      if (this->serial_nr_text_sensor_ != nullptr) {
-        this->serial_nr_text_sensor_->publish_state(this->data_.meter_info.serial_str);
-      }
+      PUBLISH_TEXT_SENSOR(this->network_address_text_sensor_, to_string(this->data_.meter_info.network_address));
+      PUBLISH_TEXT_SENSOR(this->serial_nr_text_sensor_, this->data_.meter_info.serial_str);
 
       // Publish tariff consumption data
       if (this->data_.got & MASK_GOT_TARIFF) {
         // 0 for total, then 1-4 for tariff
         for (uint8_t tariff = 0; tariff <= TARIFF_COUNT; ++tariff) {
-          if (this->energy_sensor_[tariff] != nullptr) {
-            this->energy_sensor_[tariff]->publish_state(this->data_.energy_consumption[tariff]);
-          }
+          PUBLISH_SENSOR(this->energy_sensor_[tariff], this->data_.energy_consumption[tariff]);
         }
       }
       if (this->data_.got & MASK_GOT_DATETIME) {
-        if (this->date_text_sensor_ != nullptr) {
-          this->date_text_sensor_->publish_state(this->data_.date_str);
-        }
-        if (this->time_text_sensor_ != nullptr) {
-          this->time_text_sensor_->publish_state(this->data_.time_str);
-        }
-        if (this->datetime_text_sensor_ != nullptr) {
-          this->datetime_text_sensor_->publish_state(this->data_.datetime_str);
-        }
+        PUBLISH_TEXT_SENSOR(this->date_text_sensor_, this->data_.date_str);
+        PUBLISH_TEXT_SENSOR(this->time_text_sensor_, this->data_.time_str);
+        PUBLISH_TEXT_SENSOR(this->datetime_text_sensor_, this->data_.datetime_str);
       }
 
       if (this->data_.got & MASK_GOT_CURRENT) {
         if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
-          if (this->current_a_sensor_ != nullptr) {
-            this->current_a_sensor_->publish_state(this->data_.current[0]);
-          }
-          if (this->current_b_sensor_ != nullptr) {
-            this->current_b_sensor_->publish_state(this->data_.current[1]);
-          }
-          if (this->current_c_sensor_ != nullptr) {
-            this->current_c_sensor_->publish_state(this->data_.current[2]);
-          }
+          PUBLISH_SENSOR(this->current_a_sensor_, this->data_.current[0]);
+          PUBLISH_SENSOR(this->current_b_sensor_, this->data_.current[1]);
+          PUBLISH_SENSOR(this->current_c_sensor_, this->data_.current[2]);
         } else {
-          if (this->current_sensor_ != nullptr) {
-            this->current_sensor_->publish_state(this->data_.current[0]);
-          }
+          PUBLISH_SENSOR(this->current_sensor_, this->data_.current[0]);
         }
       }
       if (this->data_.got & MASK_GOT_VOLTAGE) {
         if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
-          if (this->voltage_a_sensor_ != nullptr) {
-            this->voltage_a_sensor_->publish_state(this->data_.voltage[0]);
-          }
-          if (this->voltage_b_sensor_ != nullptr) {
-            this->voltage_b_sensor_->publish_state(this->data_.voltage[1]);
-          }
-          if (this->voltage_c_sensor_ != nullptr) {
-            this->voltage_c_sensor_->publish_state(this->data_.voltage[2]);
-          }
-        } else if (this->voltage_sensor_ != nullptr) {
-          this->voltage_sensor_->publish_state(this->data_.voltage[0]);
+          PUBLISH_SENSOR(this->voltage_a_sensor_, this->data_.voltage[0]);
+          PUBLISH_SENSOR(this->voltage_b_sensor_, this->data_.voltage[1]);
+          PUBLISH_SENSOR(this->voltage_c_sensor_, this->data_.voltage[2]);
+        } else {
+          PUBLISH_SENSOR(this->voltage_sensor_, this->data_.voltage[0]);
         }
       }
       if (this->data_.got & MASK_GOT_POWER) {
         if (this->meter_model_ == CEMeterModel::MODEL_CE307_R33) {
-          if (this->power_a_sensor_ != nullptr) {
-            this->power_a_sensor_->publish_state(this->data_.power[0]);
-          }
-          if (this->power_b_sensor_ != nullptr) {
-            this->power_b_sensor_->publish_state(this->data_.power[1]);
-          }
-          if (this->power_c_sensor_ != nullptr) {
-            this->power_c_sensor_->publish_state(this->data_.power[2]);
-          }
-          if (this->power_sensor_ != nullptr) {
-            this->power_sensor_->publish_state(this->data_.power[0] + this->data_.power[1] + this->data_.power[2]);
-          }
-        } else if (this->power_sensor_ != nullptr) {
-          this->power_sensor_->publish_state(this->data_.power[0]);
+          PUBLISH_SENSOR(this->power_a_sensor_, this->data_.power[0]);
+          PUBLISH_SENSOR(this->power_b_sensor_, this->data_.power[1]);
+          PUBLISH_SENSOR(this->power_c_sensor_, this->data_.power[2]);
+
+          PUBLISH_SENSOR(this->power_sensor_, this->data_.power[0] + this->data_.power[1] + this->data_.power[2]);
+        } else {
+          PUBLISH_SENSOR(this->power_sensor_, this->data_.power[0]);
         }
       }
     } break;
