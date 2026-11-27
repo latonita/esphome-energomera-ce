@@ -938,7 +938,7 @@ ResponseProcessor CEComponent::get_energy_processor(uint8_t tariff) {
     value = payload[offset] | (payload[offset + 1] << 8) | (payload[offset + 2] << 16) | (payload[offset + 3] << 24);
     this->data_.energy_consumption[tariff] = 0.01f * (float) value;  // Convert to kWh
     if (tariff == 0) {
-      ESP_LOGI(TAG, "Energy Total = %.2f kWh", tariff, (0.01f * (float) value));
+      ESP_LOGI(TAG, "Energy Total = %.2f kWh", (0.01f * (float) value));
     } else {
       ESP_LOGI(TAG, "Energy T%d = %.2f kWh", tariff, (0.01f * (float) value));
     }
