@@ -45,6 +45,8 @@
 Для CE307 R34 сюда: [esphome-dlms-cosem](http://github.com/latonita/esphome-dlms-cosem) или [esphome-energomera-iec](http://github.com/latonita/esphome-energomera-iec)
 
 
+Требуется ESPHome 2026.1 или новее. Для ESPHome 2026.11 и новее нужна версия компонента 2026.11.0 или новее (предыдущие версии не компилируются).
+
 # Пример конфигурации
 
 ```<yaml>
