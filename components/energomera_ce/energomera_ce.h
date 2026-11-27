@@ -109,6 +109,7 @@ class CEComponent : public PollingComponent, public uart::UARTDevice {
   void update() override;
 
  protected:
+  void log_hex_(const char *dir, const uint8_t *data, size_t len);
   CEMeterModel meter_model_{CEMeterModel::MODEL_CE102_R51};
   GPIOPin *flow_control_pin_{nullptr};
   uint32_t receive_timeout_{2000};

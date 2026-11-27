@@ -1,6 +1,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "energomera_ce.h"
+#include <algorithm>
 
 // Put this in your .h file, usually near the class or in a helpers section
 
@@ -205,6 +206,19 @@ void CEComponent::set_energy_sensor(uint8_t tariff, sensor::Sensor *sensor) {
   }
 #ifdef USE_SENSOR  
   this->energy_sensor_[tariff] = sensor;
+#endif
+}
+
+// Hex dump at VERY_VERBOSE, split into short lines: keeps the stack buffer small
+// and stays under the logger's line length limit.
+void CEComponent::log_hex_(const char *dir, const uint8_t *data, size_t len) {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERY_VERBOSE
+  static constexpr size_t CHUNK = 32;
+  char hex_buf[format_hex_pretty_size(CHUNK)];
+  for (size_t off = 0; off < len; off += CHUNK) {
+    size_t n = std::min(CHUNK, len - off);
+    ESP_LOGVV(TAG, "%s[%u]: %s", dir, static_cast<unsigned>(off), format_hex_pretty_to(hex_buf, data + off, n, '.'));
+  }
 #endif
 }
 
@@ -553,7 +567,7 @@ bool CEComponent::process_received_data() {
     ESP_LOGE(TAG, "Empty response received");
     return false;
   }
-  ESP_LOGVV(TAG, "Raw RX data (Un-Slipped): %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
+  this->log_hex_("Raw RX data (Un-Slipped)", this->rx_buffer_, this->rx_buffer_pos_);
 
   // Decode SLIP-like encoding
   if (!decode_ce_packet(this->rx_buffer_, this->rx_buffer_pos_)) {
@@ -562,7 +576,7 @@ bool CEComponent::process_received_data() {
   }
 
   ESP_LOGV(TAG, "Processing command response: 0x%04X", static_cast<uint16_t>(this->request_tracker_.current_cmd));
-  ESP_LOGVV(TAG, "Decoded payload: %s", format_hex_pretty(this->rx_buffer_, this->rx_buffer_pos_).c_str());
+  this->log_hex_("Decoded payload", this->rx_buffer_, this->rx_buffer_pos_);
 
   if (this->rx_buffer_pos_ < CE_REPLY_FRAME_MIN_LEN) {
     ESP_LOGE(TAG, "Response too short: %d bytes", this->rx_buffer_pos_);
@@ -629,7 +643,7 @@ void CEComponent::send_ce_command(uint16_t addr, uint16_t cmd, const uint8_t *da
     return;
   }
 
-  ESP_LOGVV(TAG, "TX packet (SLIPPED): %s", format_hex_pretty(this->tx_buffer_, packet_len).c_str());
+  this->log_hex_("TX packet (SLIPPED)", this->tx_buffer_, packet_len);
 
   if (this->flow_control_pin_ != nullptr) {
     this->flow_control_pin_->digital_write(true);
@@ -695,7 +709,7 @@ size_t CEComponent::build_ce_packet(uint8_t *buffer, uint16_t addr, uint16_t cmd
   // Calculate and add CRC for the entire payload
   uint8_t crc8 = crc8_ce(payload, payload_len);
   payload[payload_len++] = crc8;
-  ESP_LOGVV(TAG, "TX payload: %s", format_hex_pretty(payload, payload_len).c_str());
+  this->log_hex_("TX payload", payload, payload_len);
   // ============================================================================
   // BLOCK 2: Construct the final output buffer with SLIP encoding
   // ============================================================================
